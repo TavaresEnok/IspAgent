@@ -6,6 +6,7 @@ import { ToolExecutorService } from '../src/tools/tool-executor.service';
 import { MockERPAdapter } from '../src/integrations/erp/mock-erp.adapter';
 import { ErpToolsService } from '../src/tools/erp-tools.service';
 import { MockPulseISPAdapter } from '../src/integrations/pulseisp/mock-pulseisp.adapter';
+import { HandoffService } from '../src/handoff/handoff.service';
 import { KnowledgeService } from '../src/knowledge/knowledge.service';
 import { MockAIProvider } from '../src/integrations/ai/mock-ai.provider';
 import { ConversationService } from '../src/conversation/conversation.service';
@@ -38,8 +39,9 @@ describe('AgentOrchestratorService', () => {
     const conversation = new ConversationService(db, identity);
     const ai = new MockAIProvider();
     const pulseisp = new MockPulseISPAdapter(db);
+    const handoff = new HandoffService(db);
 
-    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp);
+    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp, handoff);
   });
 
   afterAll(async () => {
@@ -50,12 +52,20 @@ describe('AgentOrchestratorService', () => {
     return `+55${randomUUID().replace(/\D/g, '').slice(0, 10)}`;
   }
 
+  // Nenhum destes testes envolve uma conversa já com humano assumido, então handleMessage nunca deveria
+  // devolver null aqui — o wrapper só torna essa premissa explícita e evita `!` espalhado nos testes.
+  async function ask(conversationId: string, message: string) {
+    const decision = await orchestrator.handleMessage(conversationId, message);
+    if (!decision) throw new Error('esperava AgentDecision, recebi null (conversa em HUMAN_ACTIVE?)');
+    return decision;
+  }
+
   it('pergunta financeira de cliente identificado (cus_demo_b) executa BillingTool e responde com o fato real (P0.2)', async () => {
     const decision = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990002', status: 'AI_ACTIVE' },
       });
-      return orchestrator.handleMessage(conv.id, 'Minha fatura está com atraso, o que houve?');
+      return ask(conv.id, 'Minha fatura está com atraso, o que houve?');
     });
 
     expect(decision.identity?.customerId).toBe('cus_demo_b');
@@ -79,7 +89,7 @@ describe('AgentOrchestratorService', () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
       });
-      return orchestrator.handleMessage(conv.id, 'quero saber da minha fatura');
+      return ask(conv.id, 'quero saber da minha fatura');
     });
 
     expect(decision.identity).toBeNull();
@@ -97,7 +107,7 @@ describe('AgentOrchestratorService', () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: freshPhone(), status: 'AI_ACTIVE' },
       });
-      return orchestrator.handleMessage(conv.id, 'minha internet está muito lenta, o que eu faço?');
+      return ask(conv.id, 'minha internet está muito lenta, o que eu faço?');
     });
 
     expect(decision.identity).toBeNull();
@@ -113,7 +123,7 @@ describe('AgentOrchestratorService', () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990006', status: 'AI_ACTIVE' },
       });
-      return orchestrator.handleMessage(conv.id, 'qual o status do meu chamado?');
+      return ask(conv.id, 'qual o status do meu chamado?');
     });
 
     expect(decision.identity?.customerId).toBe('cus_demo_f');
@@ -129,7 +139,7 @@ describe('AgentOrchestratorService', () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990001', status: 'AI_ACTIVE' },
       });
-      return orchestrator.handleMessage(conv.id, 'preciso abrir um chamado, minha internet está com problema técnico');
+      return ask(conv.id, 'preciso abrir um chamado, minha internet está com problema técnico');
     });
 
     expect(decision.outcome).toBe('ACTION_EXECUTED');
@@ -154,7 +164,7 @@ describe('AgentOrchestratorService', () => {
         const conv = await db.client.conversation.create({
           data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990001', status: 'AI_ACTIVE' },
         });
-        return orchestrator.handleMessage(conv.id, 'quero ver minha fatura');
+        return ask(conv.id, 'quero ver minha fatura');
       });
 
       expect(decision.outcome).toBe('BLOCKED');
@@ -171,7 +181,7 @@ describe('AgentOrchestratorService', () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_beta', channel: 'WEBCHAT', channelUserId: '+5511999990001', status: 'AI_ACTIVE' },
       });
-      return orchestrator.handleMessage(conv.id, 'quero ver minha fatura');
+      return ask(conv.id, 'quero ver minha fatura');
     });
 
     expect(decision.identity).toBeNull();

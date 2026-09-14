@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { AgentDecision, Claim, Intent, PolicyDecision, ToolResult } from '@ispagent/shared';
+import { AgentDecision, Claim, HandoffSummary, Intent, PolicyDecision, ToolResult } from '@ispagent/shared';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { currentTenantId } from '../common/tenant-context';
 import { ConversationService } from '../conversation/conversation.service';
@@ -11,6 +11,7 @@ import { KnowledgeService } from '../knowledge/knowledge.service';
 import { AI_PROVIDER, AIProvider } from '../integrations/ai/ai-provider.interface';
 import { PULSEISP_ADAPTER, PulseISPAdapter } from '../integrations/pulseisp/pulseisp-adapter.interface';
 import { createPulseISPQueryTool } from '../tools/pulseisp-tool';
+import { HandoffService } from '../handoff/handoff.service';
 import { ClaimValidatorService, ClaimInvariantViolationError } from './claim-validator.service';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
@@ -46,15 +47,28 @@ export class AgentOrchestratorService {
     private readonly knowledgeService: KnowledgeService,
     @Inject(AI_PROVIDER) private readonly ai: AIProvider,
     @Inject(PULSEISP_ADAPTER) pulseisp: PulseISPAdapter,
+    private readonly handoff: HandoffService,
   ) {
     this.pulseIspTool = createPulseISPQueryTool(pulseisp);
   }
 
-  async handleMessage(conversationId: string, customerMessage: string): Promise<AgentDecision> {
+  /**
+   * `null` = a IA não respondeu porque um humano já assumiu esta conversa (seção 5.4: "quando o humano
+   * assume, a IA para de responder"). A mensagem do cliente ainda é registrada, só não gera AgentRun.
+   */
+  async handleMessage(conversationId: string, customerMessage: string): Promise<AgentDecision | null> {
     const tenantId = currentTenantId();
     if (!tenantId) throw new Error('[agent-orchestrator] requer contexto de tenant ativo.');
 
+    const conversationRecord = await this.db.client.conversation.findUniqueOrThrow({
+      where: { id: conversationId },
+    });
+
     await this.conversation.appendMessage(conversationId, 'CUSTOMER', customerMessage);
+
+    if (conversationRecord.status === 'HUMAN_ACTIVE') {
+      return null;
+    }
 
     const identityResult = await this.conversation.resolveIdentity(conversationId);
     const classification = await this.ai.classifyIntent(customerMessage);
@@ -125,6 +139,17 @@ export class AgentOrchestratorService {
       } else {
         throw err;
       }
+    }
+
+    if (outcome === 'HANDOFF') {
+      const summary = this.buildHandoffSummary(
+        classification.intent,
+        identifiedCustomerId,
+        identifiedContractId,
+        customerMessage,
+        toolResults,
+      );
+      await this.handoff.createHandoff(conversationId, summary.reason, summary);
     }
 
     const primaryResult = toolResults[0];
@@ -200,6 +225,38 @@ export class AgentOrchestratorService {
           { agentRunId, idempotencyKey: `agentrun-${agentRunId}-create_ticket` },
         );
     }
+  }
+
+  private buildHandoffSummary(
+    intent: Intent,
+    customerId: string | null,
+    contractId: string | null,
+    customerMessage: string,
+    toolResults: ToolResult[],
+  ): HandoffSummary {
+    const reason =
+      customerId === null
+        ? 'Identidade do cliente ambígua ou não encontrada para uma intenção que exige conta confirmada.'
+        : 'Não foi possível responder com confiança dentro das garantias do agente (ver ferramentas consultadas).';
+
+    return {
+      reason,
+      customerId,
+      contractId,
+      intent,
+      reportedProblem: customerMessage,
+      toolsConsulted: toolResults.map((r) => ({ tool: r.tool, result: r.status })),
+      actionsTaken: toolResults
+        .filter((r) => r.status === 'OK' && r.source.capability === 'create_ticket')
+        .map((r) => `${r.tool} (${r.source.capability})`),
+      actionsFailed: toolResults
+        .filter((r) => ['UPSTREAM_ERROR', 'TIMEOUT', 'BLOCKED_BY_POLICY'].includes(r.status))
+        .map((r) => `${r.tool}: ${r.status}`),
+      suggestedNextAction:
+        customerId === null
+          ? 'Confirmar identidade do cliente (CPF/CNPJ ou contrato) antes de prosseguir.'
+          : 'Revisar o histórico da conversa e os fatos já levantados antes de responder ao cliente.',
+    };
   }
 
   private buildClaims(toolResults: ToolResult[]): Claim[] {

@@ -1,11 +1,11 @@
 # STATE
-Fase atual: 8 — Handoff e console (não iniciada)
-Última fase com gate APROVADO: 7 — PulseISP (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `pnpm --filter @ispagent/api test pulseisp` (9/9 verde, 77/77 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
-Próxima ação concreta: escrever os testes de aceitação da Fase 8 (fila humana, resumo estruturado de handoff, takeover, retorno para IA — P0.5) antes de implementar, seguindo o loop da seção 0.6. `Handoff` já existe no schema Prisma (id, tenantId, conversationId, reason, summary Json, status, assumedByUserId, assumedAt, returnedAt) — só falta o service/endpoint.
+Fase atual: 9 — Canais e UI (não iniciada)
+Última fase com gate APROVADO: 8 — Handoff e console (commit: ver próximo commit após este arquivo)
+Último comando executado com sucesso: `pnpm --filter @ispagent/api test handoff` (6/6 verde, 83/83 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
+Próxima ação concreta: Fase 9 é a maior restante — Web Chat DEMO (canal obrigatório, 100% local) + painel admin completo (seção 10.1: Login, Dashboard, Conversas, Fila humana, Detalhe da conversa com timeline, Clientes, Knowledge Base, Integrações, Config ERP, Config PulseISP, Políticas, Ferramentas, Config do agente, Usuários, Auditoria) + endpoints HTTP no apps/api expondo AgentOrchestratorService/HandoffService (hoje só são usados via chamada direta de serviço nos testes, não existe controller/rota ainda). Gate: `pnpm build` verde e Web Chat respondendo ponta a ponta. Priorizar: (1) endpoints REST mínimos (auth já existe; faltam conversations/messages/handoff/customers), (2) Web Chat, (3) telas de admin essenciais (Dashboard, Conversas, Fila humana, Detalhe), (4) telas de configuração restantes se houver tempo.
 Arquivos em edição incompleta: nenhum
 Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. Todas as integrações externas seguirão o padrão adapter+DEMO das seções 6 e 0.3, nunca "fingindo" validação que não ocorreu. AnthropicProvider implementado mas não validado ponta a ponta (sem API key nesta sessão) — MockAIProvider é o que roda de fato.
-Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + reafirmado), P0.6 (policy bloqueia de fato), idempotência (princípio 1.7, 3/3), ERP DEMO real (16/16), invariante de Claim/evidence — seção 3.4 (7/7, reafirmado end-to-end), P0.3 (resposta nunca cita fato ausente — reafirmado com cenário PulseISP coletivo), P0.4 (mesma conversa com PulseISP ligado/desligado, 3/3 em pulseisp.spec.ts)
+Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + reafirmado), P0.6 (policy bloqueia de fato), idempotência (princípio 1.7, 3/3), ERP DEMO real (16/16), invariante de Claim/evidence — seção 3.4 (7/7, reafirmado end-to-end), P0.3 (resposta nunca cita fato ausente), P0.4 (PulseISP ligado/desligado, 3/3), P0.5 (handoff completo — resumo real, fila, takeover bloqueia AgentRun, AI→HUMAN→AI, 6/6 em handoff.spec.ts)
 
 ## Notas para a próxima sessão
 
@@ -80,4 +80,14 @@ Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + r
 - Handoff (Fase 8) deve reaproveitar `AgentDecision.outcome === 'HANDOFF'` como sinal de entrada na fila
   — o orquestrador já marca isso corretamente (identidade ambígua/não encontrada em intenção de conta,
   ou violação do invariante de Claim); a Fase 8 só precisa CRIAR o registro `Handoff` com o resumo
-  estruturado quando isso acontece, não redecidir quando um handoff é necessário.
+  estruturado quando isso acontece, não redecidir quando um handoff é necessário. **(feito)**
+- `AgentOrchestratorService.handleMessage` agora devolve `AgentDecision | null` (`null` = conversa
+  `HUMAN_ACTIVE`, IA em silêncio). Qualquer código novo que chame `handleMessage` (a Fase 9 vai chamar
+  isso a partir de um controller HTTP) precisa tratar o caso `null` explicitamente — não assumir que
+  sempre há uma resposta da IA para devolver ao canal.
+- `HandoffService` (`apps/api/src/handoff/`) já tem `listQueue`/`assume`/`returnToAI` prontos — a tela
+  "Fila humana" e o botão de assumir/devolver da Fase 9 só precisam de um controller fino chamando isso,
+  não reimplementar a lógica de transição de estado.
+- Padrão de limpeza de FK em testes que criam `Conversation` ad-hoc: sempre apagar na ordem `ToolCall →
+  AgentRun/Handoff → Message → Conversation` (ver `resetConversationsFor` em `conversation.spec.ts`) —
+  qualquer novo teste que precisar limpar conversas deve seguir essa ordem.

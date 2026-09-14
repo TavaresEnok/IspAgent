@@ -34,7 +34,7 @@ describe('conversation engine', () => {
 
   // Outros arquivos de teste (agent.spec.ts, billing.spec.ts) também criam conversas ad-hoc usando
   // telefones reais do seed (ex.: +5511999990001), então esta limpeza precisa remover a árvore inteira
-  // (ToolCall → AgentRun → Message → Conversation), não só mensagens, para não esbarrar em FK.
+  // (ToolCall → AgentRun → Handoff/Message → Conversation), não só mensagens, para não esbarrar em FK.
   async function resetConversationsFor(phone: string) {
     await runWithTenant('tnt_demo_alpha', async () => {
       const existing = await db.client.conversation.findMany({
@@ -46,6 +46,7 @@ describe('conversation engine', () => {
           await db.client.toolCall.deleteMany({ where: { agentRunId: run.id } });
         }
         await db.client.agentRun.deleteMany({ where: { conversationId: c.id } });
+        await db.client.handoff.deleteMany({ where: { conversationId: c.id } });
         await db.client.message.deleteMany({ where: { conversationId: c.id } });
         await db.client.conversation.delete({ where: { id: c.id } });
       }

@@ -10,6 +10,7 @@ import { PolicyModule } from './policy/policy.module';
 import { ToolsModule } from './tools/tools.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { AgentModule } from './agent/agent.module';
+import { HandoffModule } from './handoff/handoff.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { AgentModule } from './agent/agent.module';
     ToolsModule,
     KnowledgeModule,
     AgentModule,
+    HandoffModule,
   ],
   controllers: [HealthController],
 })

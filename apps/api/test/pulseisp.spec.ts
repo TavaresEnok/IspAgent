@@ -13,6 +13,7 @@ import { ConversationService } from '../src/conversation/conversation.service';
 import { IdentityResolutionService } from '../src/identity/identity-resolution.service';
 import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.service';
 import { ClaimValidatorService } from '../src/agent/claim-validator.service';
+import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
 
 /**
@@ -42,8 +43,9 @@ describe('PulseISP', () => {
     const identity = new IdentityResolutionService(db);
     const conversation = new ConversationService(db, identity);
     const ai = new MockAIProvider();
+    const handoff = new HandoffService(db);
 
-    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp);
+    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp, handoff);
   });
 
   afterAll(async () => {
@@ -53,6 +55,12 @@ describe('PulseISP', () => {
 
   function freshPhone() {
     return `+55${randomUUID().replace(/\D/g, '').slice(0, 10)}`;
+  }
+
+  async function ask(conversationId: string, message: string) {
+    const decision = await orchestrator.handleMessage(conversationId, message);
+    if (!decision) throw new Error('esperava AgentDecision, recebi null (conversa em HUMAN_ACTIVE?)');
+    return decision;
   }
 
   describe('MockPulseISPAdapter', () => {
@@ -150,7 +158,7 @@ describe('PulseISP', () => {
         const conv = await db.client.conversation.create({
           data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990003', status: 'AI_ACTIVE' },
         });
-        return orchestrator.handleMessage(conv.id, 'minha internet está caindo toda hora');
+        return ask(conv.id, 'minha internet está caindo toda hora');
       });
 
       const call = await runWithTenant('tnt_demo_alpha', () =>
@@ -165,7 +173,7 @@ describe('PulseISP', () => {
         const conv = await db.client.conversation.create({
           data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990003', status: 'AI_ACTIVE' },
         });
-        return orchestrator.handleMessage(conv.id, 'minha internet está caindo toda hora');
+        return ask(conv.id, 'minha internet está caindo toda hora');
       });
 
       const call = await runWithTenant('tnt_demo_alpha', () =>
@@ -181,7 +189,7 @@ describe('PulseISP', () => {
         const conv = await db.client.conversation.create({
           data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990004', status: 'AI_ACTIVE' },
         });
-        return orchestrator.handleMessage(conv.id, 'estou sem internet, caiu de novo');
+        return ask(conv.id, 'estou sem internet, caiu de novo');
       });
 
       const claimTexts = decision.claims.map((c) => c.text).join(' | ');

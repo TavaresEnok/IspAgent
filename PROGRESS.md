@@ -222,4 +222,33 @@ constructor do orchestrator).
 
 ---
 
-*(Fases 8–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 8 — Handoff e console
+
+**Status:** ✅ APROVADO. Gate `pnpm test handoff` → **6/6 testes verdes** (83/83 no total, sem regressão).
+
+Entregue:
+- `HandoffService` (`apps/api/src/handoff/`): `createHandoff` (idempotente por conversa — não duplica
+  entrada na fila), `listQueue`, `assume` (humano assume: `conversation.status → HUMAN_ACTIVE`),
+  `returnToAI` (`AI → HUMAN → AI`, seção 5.4). Toda transição gera `AuditLog`
+  (`handoff.created`/`handoff.assumed`/`handoff.returned_to_ai`).
+- `AgentOrchestratorService.handleMessage` agora devolve `AgentDecision | null` — `null` quando a
+  conversa está `HUMAN_ACTIVE` (a mensagem do cliente ainda é registrada, a IA só não responde nem gera
+  `AgentRun` novo — **P0.5 provado diretamente**: teste conta `AgentRun`s antes/depois do takeover e
+  confirma que não aumenta).
+- Quando o outcome de um turno é `HANDOFF`, o orquestrador monta o `HandoffSummary` estruturado
+  (motivo, cliente, contrato, intenção, problema relatado, ferramentas consultadas + resultado, ações
+  tomadas/falhadas, próxima ação sugerida — schema exato da seção 5.4) e cria o registro de verdade —
+  não é só um outcome solto, vira item real na fila.
+- `test/handoff.spec.ts` (6): resumo estruturado a partir de um HANDOFF real (identidade ambígua),
+  idempotência da fila, takeover bloqueando novo `AgentRun`, ciclo completo `AI → HUMAN → AI`, isolamento
+  de tenant na fila, sequência de auditoria.
+
+Um bug de FK da mesma classe da Fase 6 (registrado ali) reapareceu com `Handoff`: `resetConversationsFor`
+em `conversation.spec.ts` agora também apaga `Handoff` antes da `Conversation`.
+
+Console/UI de atendimento humano (telas) fica para a Fase 9 — esta fase entregou o motor
+(`HandoffService` + integração no orquestrador), não a interface.
+
+---
+
+*(Fases 9–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*

@@ -7,9 +7,10 @@ import { PolicyModule } from '../policy/policy.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { AiProviderModule } from '../integrations/ai/ai-provider.module';
 import { PulseISPModule } from '../integrations/pulseisp/pulseisp.module';
+import { HandoffModule } from '../handoff/handoff.module';
 
 @Module({
-  imports: [ConversationModule, ToolsModule, PolicyModule, KnowledgeModule, AiProviderModule, PulseISPModule],
+  imports: [ConversationModule, ToolsModule, PolicyModule, KnowledgeModule, AiProviderModule, PulseISPModule, HandoffModule],
   providers: [AgentOrchestratorService, ClaimValidatorService],
   exports: [AgentOrchestratorService, ClaimValidatorService],
 })
