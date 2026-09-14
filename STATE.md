@@ -1,11 +1,11 @@
 # STATE
-Fase atual: 5 — ERP (não iniciada)
-Última fase com gate APROVADO: 4 — Tool layer e policy (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `pnpm --filter @ispagent/api test tools policy idempotency` (14/14 verde, 33/33 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
-Próxima ação concreta: escrever os testes de aceitação da Fase 5 (ERPAdapter + MockERPAdapter completo, BillingTool/SupportTool/PlanTool reais usando o ToolExecutorService da Fase 4) antes de implementar, seguindo o loop da seção 0.6.
+Fase atual: 6 — Inteligência (não iniciada)
+Última fase com gate APROVADO: 5 — ERP (commit: ver próximo commit após este arquivo)
+Último comando executado com sucesso: `pnpm --filter @ispagent/api test erp billing support` (16/16 verde, 49/49 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
+Próxima ação concreta: escrever os testes de aceitação da Fase 6 (AIProvider + MockAIProvider, Agent Orchestrator, invariante de Claim/evidence — P0.3, Knowledge Base) antes de implementar, seguindo o loop da seção 0.6. `ISPAGENT_ANTHROPIC_API_KEY` provavelmente vazia nesta sessão — MockAIProvider é o caminho testável; documentar honestamente se o AnthropicProvider real não puder ser validado ponta a ponta.
 Arquivos em edição incompleta: nenhum
 Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. Todas as integrações externas seguirão o padrão adapter+DEMO das seções 6 e 0.3, nunca "fingindo" validação que não ocorreu.
-Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11), P0.6 (policy bloqueia de fato — espião com zero chamadas, em tools.spec.ts), idempotência (princípio 1.7, 3/3 em idempotency.spec.ts)
+Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11), P0.6 (policy bloqueia de fato, tools.spec.ts), idempotência (princípio 1.7, 3/3), ERP DEMO real contra Postgres seedado (erp/billing/support, 16/16)
 
 ## Notas para a próxima sessão
 
@@ -47,3 +47,13 @@ Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11), P
 - `ToolCall.data` (Json?) persiste o payload de retorno para idempotência funcionar de verdade (migration
   `20260914202237_add_tool_call_data`) — qualquer `execute()` novo deve devolver `data` populado quando
   fizer sentido, não só `facts`.
+- `ERP_ADAPTER` (token, `apps/api/src/integrations/erp/erp-adapter.interface.ts`) já resolve
+  Mock/IXC/SGP por `ISPAGENT_ERP_PROVIDER`. `ErpToolsService` expõe `billingTool`, `supportGetTicketsTool`,
+  `supportCreateTicketTool`, `planViewTool` prontos — a Fase 6 (Agent Orchestrator) deve injetar esse
+  serviço para saber quais ferramentas oferecer ao LLM, não reconstruir `ToolDefinition`s.
+- Class fields que dependem de um parâmetro de constructor (`@Inject(...) erp: ERPAdapter`) NÃO podem
+  usar `this.erp` em inicializador de campo (`readonly x = f(this.erp)`) — a ordem de inicialização do
+  JS roda os field initializers ANTES da atribuição de parameter properties. Atribuir dentro do corpo do
+  constructor, não como field initializer (ver `erp-tools.service.ts`).
+- `packages/shared`: `ToolStatus` ganhou `INVALID_INPUT` (Fase 4). Contrato só cresce, nunca muda
+  semântica de valor existente (seção 3.4) — se a Fase 6 precisar de outro status novo, mesma regra.

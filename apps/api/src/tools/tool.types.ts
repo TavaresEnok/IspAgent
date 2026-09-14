@@ -20,7 +20,10 @@ export interface ToolDefinition<TInput = unknown, TOutput = unknown> {
   adapter: string;
   capability: string;
   mode: RunMode;
-  execute: (input: TInput, ctx: { tenantId: string }) => Promise<ToolExecuteOutcome<TOutput>>;
+  execute: (
+    input: TInput,
+    ctx: { tenantId: string; idempotencyKey?: string },
+  ) => Promise<ToolExecuteOutcome<TOutput>>;
 }
 
 export interface ToolRunOptions {

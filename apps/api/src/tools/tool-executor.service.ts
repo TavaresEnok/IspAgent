@@ -79,7 +79,7 @@ export class ToolExecutorService {
 
     try {
       const outcome = await this.withTimeout(
-        def.execute(parsed.data, { tenantId }),
+        def.execute(parsed.data, { tenantId, idempotencyKey: opts.idempotencyKey }),
         opts.timeoutMs ?? 10_000,
       );
       return this.finish(def, opts, toolCallId, startedAt, outcome);

@@ -9,14 +9,18 @@ real para comprovar), `INDISPONÍVEL` (não implementado nesta fase).
 dessas integrações pode, portanto, ser marcada `VALIDADO` — isso exigiria uma API real ou documentação
 oficial acessível para conferência ponto a ponto, o que a seção 0.2 proíbe presumir.
 
-| Capacidade | IXC | SGP | PulseISP | WhatsApp |
-|---|---|---|---|---|
-| Buscar cliente | NÃO VALIDADO (interface + demo planejados, fase 5) | NÃO VALIDADO (interface + demo planejados, fase 5) | — | — |
-| Consultar plano | NÃO VALIDADO (fase 5) | NÃO VALIDADO (fase 5) | — | — |
-| Fatura / segunda via | NÃO VALIDADO (fase 5) | NÃO VALIDADO (fase 5) | — | — |
-| Abrir chamado | NÃO VALIDADO (fase 5) | NÃO VALIDADO (fase 5) | — | — |
-| Health Score | — | — | NÃO VALIDADO (fase 7, mock apenas — sem OpenAPI real do PulseISP disponível) | — |
-| Receber mensagem | — | — | — | INDISPONÍVEL (fase 9 estrutura o adapter/webhook; sem credencial Meta, fica `NÃO VALIDADO end-to-end` mesmo depois de implementado) |
+| Capacidade | ERP DEMO (Mock) | IXC | SGP | PulseISP | WhatsApp |
+|---|---|---|---|---|---|
+| Buscar cliente | ✅ VALIDADO (real contra Postgres seedado, `test/erp.spec.ts`) | ESTRUTURADO, NÃO VALIDADO (sem doc oficial acessível) | ESTRUTURADO, NÃO VALIDADO (idem) | — | — |
+| Consultar plano | ✅ VALIDADO (`test/erp.spec.ts`, `PlanTool`) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
+| Fatura / segunda via | ✅ VALIDADO (`BillingTool`, `test/billing.spec.ts` — inclui P0.2) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
+| Abrir chamado | ✅ VALIDADO (`SupportTool`, idempotente, `test/support.spec.ts`) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
+| Health Score | — | — | — | NÃO VALIDADO (fase 7, mock apenas — sem OpenAPI real do PulseISP disponível) | — |
+| Receber mensagem | — | — | — | — | INDISPONÍVEL (fase 9 estrutura o adapter/webhook; sem credencial Meta, fica `NÃO VALIDADO end-to-end` mesmo depois de implementado) |
+
+"ESTRUTURADO, NÃO VALIDADO" (IXC/SGP) = a classe implementa `ERPAdapter` (`IXCAdapter`/`SGPAdapter`,
+seção 6.1 passo 4) mas todo método lança erro explicando a ausência de documentação — nunca retorna dado
+fabricado se fosse chamado por engano.
 
 ## Fonte da validação
 

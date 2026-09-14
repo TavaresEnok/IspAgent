@@ -133,4 +133,29 @@ só para exercitar o pipeline — as ferramentas reais (`BillingTool`, `SupportT
 
 ---
 
-*(Fases 5–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 5 — ERP
+
+**Status:** ✅ APROVADO. Gate `pnpm test erp billing support` → **16/16 testes verdes** (49/49 no total,
+sem regressão).
+
+Entregue:
+- `ERPAdapter` (interface, `apps/api/src/integrations/erp/`) com as capacidades da seção 6.1:
+  `findCustomer`, `getCustomer`, `getContracts`, `getPlans`, `getInvoices`, `getFinancialStatus`,
+  `getSupportTickets`, `createSupportTicket`, `getServiceStatus`.
+- `MockERPAdapter`: **dado real do Postgres seedado**, não payload fabricado — todas as 9 capacidades
+  testadas contra os cenários do seed (`cus_demo_a` saudável, `cus_demo_b` fatura vencida, `cus_demo_e`
+  plano legado, `cus_demo_f` chamado aberto).
+- `IXCAdapter`/`SGPAdapter`: estruturados (implementam `ERPAdapter`) mas todo método lança erro explícito
+  — sem documentação oficial acessível nesta sessão, nunca fingem retornar dado real (seção 6.1 passo 4).
+- `ERPModule`: seleciona o adapter ativo por `ISPAGENT_ERP_PROVIDER` (token `ERP_ADAPTER`), nenhum
+  consumidor conhece IXC/SGP/Mock diretamente.
+- Ferramentas reais rodando pelo `ToolExecutorService` da Fase 4: `BillingTool`, `SupportTool` (consulta
+  + criação, ambas), `PlanTool` — `apps/api/src/tools/erp-tools.ts`.
+- `test/erp.spec.ts` (8), `test/billing.spec.ts` (4, inclui P0.2), `test/support.spec.ts` (4).
+
+Capability matrix atualizada: ERP DEMO passa de "planejado" para `VALIDADO` nas 4 capacidades de negócio;
+IXC/SGP continuam honestamente `ESTRUTURADO, NÃO VALIDADO`.
+
+---
+
+*(Fases 6–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
