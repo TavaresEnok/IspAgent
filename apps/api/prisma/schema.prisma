@@ -1,0 +1,362 @@
+// ISPAgent — schema Prisma
+// Multi-tenant: toda tabela de domínio carrega tenantId e é filtrada por ele na camada de dados
+// (ver src/prisma/tenant-scoped.middleware.ts), não só no controller — cobre P0.8.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ISPAGENT_DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  SUPERVISOR
+  AGENT
+  ANALYST
+  READ_ONLY
+}
+
+enum ContractStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  PAID
+  OPEN
+  OVERDUE
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model Tenant {
+  id        String   @id
+  name      String
+  createdAt DateTime @default(now())
+
+  users            User[]
+  customers        Customer[]
+  policyConfig     TenantPolicyConfig?
+  auditLogs        AuditLog[]
+  conversations    Conversation[]
+  knowledgeDocs    KnowledgeDocument[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  email        String
+  passwordHash String
+  role         Role
+  name         String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  refreshTokens RefreshToken[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model TenantPolicyConfig {
+  tenantId                     String  @id
+  tenant                       Tenant  @relation(fields: [tenantId], references: [id])
+  policyVersion                String  @default("v1")
+  canCreateTicket               Boolean @default(true)
+  canAccessBilling              Boolean @default(true)
+  canSendInvoice                Boolean @default(true)
+  canPerformUnlock              Boolean @default(false)
+  requiresConfirmationForUnlock Boolean @default(true)
+  canQueryPulseISP              Boolean @default(true)
+  canChangePlan                 Boolean @default(false)
+  maxToolCallsPerTurn           Int     @default(8)
+  maxTokensPerTurn              Int     @default(6000)
+  handoffAfterFailures          Int     @default(3)
+  updatedAt                     DateTime @updatedAt
+
+  @@map("tenant_policy_configs")
+}
+
+model Customer {
+  id         String   @id
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  name       String
+  document   String
+  phones     String[]
+  email      String?
+  externalId String?
+  createdAt  DateTime @default(now())
+
+  contracts     Contract[]
+  conversations Conversation[]
+
+  @@index([tenantId])
+  @@index([tenantId, externalId])
+  @@map("customers")
+}
+
+model Plan {
+  id             String @id
+  tenantId       String
+  name           String
+  downloadMbps   Int
+  uploadMbps     Int
+  priceCents     Int
+
+  contracts Contract[]
+
+  @@index([tenantId])
+  @@map("plans")
+}
+
+model Contract {
+  id          String         @id
+  tenantId    String
+  customerId  String
+  customer    Customer       @relation(fields: [customerId], references: [id])
+  planId      String
+  plan        Plan           @relation(fields: [planId], references: [id])
+  status      ContractStatus
+  address     String
+  installedAt DateTime?
+  createdAt   DateTime       @default(now())
+
+  invoices Invoice[]
+  tickets  SupportTicket[]
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@map("contracts")
+}
+
+model Invoice {
+  id              String        @id
+  tenantId        String
+  contractId      String
+  contract        Contract      @relation(fields: [contractId], references: [id])
+  referenceMonth  String
+  amountCents     Int
+  status          InvoiceStatus
+  dueDate         DateTime
+  paidAt          DateTime?
+  barcodeUrl      String?
+
+  @@index([tenantId])
+  @@index([contractId])
+  @@index([tenantId, status])
+  @@map("invoices")
+}
+
+model SupportTicket {
+  id          String       @id @default(uuid())
+  tenantId    String
+  contractId  String
+  contract    Contract     @relation(fields: [contractId], references: [id])
+  status      TicketStatus @default(OPEN)
+  category    String
+  description String
+  idempotencyKey String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([tenantId])
+  @@index([contractId])
+  @@unique([tenantId, idempotencyKey])
+  @@map("support_tickets")
+}
+
+model KnowledgeDocument {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  title     String
+  content   String
+  source    String?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("knowledge_documents")
+}
+
+enum ConversationChannel {
+  WEBCHAT
+  WHATSAPP
+}
+
+enum ConversationStatus {
+  AI_ACTIVE
+  AWAITING_CONFIRMATION
+  HANDOFF_PENDING
+  HUMAN_ACTIVE
+  CLOSED
+}
+
+enum IdentityMethod {
+  PHONE_EXACT
+  DOCUMENT
+  CONTRACT_ID
+  LOGIN
+  EMAIL
+  EXTERNAL_ID
+  AMBIGUOUS
+  NOT_FOUND
+}
+
+model Conversation {
+  id            String              @id @default(uuid())
+  tenantId      String
+  tenant        Tenant              @relation(fields: [tenantId], references: [id])
+  channel       ConversationChannel
+  channelUserId String
+  customerId    String?
+  customer      Customer?           @relation(fields: [customerId], references: [id])
+  contractId    String?
+  status        ConversationStatus  @default(AI_ACTIVE)
+  identityMethod     IdentityMethod?
+  identityConfidence String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  messages    Message[]
+  agentRuns   AgentRun[]
+  handoffs    Handoff[]
+
+  @@index([tenantId])
+  @@index([tenantId, channel, channelUserId])
+  @@map("conversations")
+}
+
+enum MessageRole {
+  CUSTOMER
+  AGENT
+  HUMAN
+  SYSTEM
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  tenantId       String
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  role           MessageRole
+  content        String
+  createdAt      DateTime     @default(now())
+
+  @@index([tenantId])
+  @@index([conversationId])
+  @@map("messages")
+}
+
+enum AgentOutcome {
+  ANSWERED
+  ACTION_EXECUTED
+  AWAITING_CONFIRMATION
+  BLOCKED
+  HANDOFF
+}
+
+model AgentRun {
+  id                String       @id @default(uuid())
+  tenantId          String
+  conversationId    String
+  conversation      Conversation @relation(fields: [conversationId], references: [id])
+  intent            String
+  intentConfidence  String
+  outcome           AgentOutcome?
+  promptVersion     String
+  model             String
+  mode              String
+  claims            Json         @default("[]")
+  policyDecisions   Json         @default("[]")
+  createdAt         DateTime     @default(now())
+
+  toolCalls ToolCall[]
+
+  @@index([tenantId])
+  @@index([conversationId])
+  @@map("agent_runs")
+}
+
+model ToolCall {
+  id             String   @id @default(uuid())
+  tenantId       String
+  agentRunId     String
+  agentRun       AgentRun @relation(fields: [agentRunId], references: [id])
+  tool           String
+  args           Json
+  status         String
+  source         Json
+  facts          Json     @default("[]")
+  error          Json?
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([agentRunId])
+  @@unique([tenantId, idempotencyKey])
+  @@map("tool_calls")
+}
+
+model Handoff {
+  id             String       @id @default(uuid())
+  tenantId       String
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  reason         String
+  summary        Json
+  status         String       @default("PENDING") // PENDING | ASSUMED | RETURNED_TO_AI | CLOSED
+  assumedByUserId String?
+  assumedAt      DateTime?
+  returnedAt     DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([tenantId])
+  @@index([conversationId])
+  @@map("handoffs")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  actorType    String   // 'USER' | 'AGENT' | 'SYSTEM'
+  actorId      String?
+  action       String
+  entityType   String?
+  entityId     String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, action])
+  @@map("audit_logs")
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@ispagent/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "echo \"@ispagent/shared: no standalone tests, types validated via api build\" && exit 0"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}
