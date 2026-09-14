@@ -32,12 +32,20 @@ describe('conversation engine', () => {
     await prisma.$disconnect();
   });
 
+  // Outros arquivos de teste (agent.spec.ts, billing.spec.ts) também criam conversas ad-hoc usando
+  // telefones reais do seed (ex.: +5511999990001), então esta limpeza precisa remover a árvore inteira
+  // (ToolCall → AgentRun → Message → Conversation), não só mensagens, para não esbarrar em FK.
   async function resetConversationsFor(phone: string) {
     await runWithTenant('tnt_demo_alpha', async () => {
       const existing = await db.client.conversation.findMany({
         where: { channel: 'WEBCHAT', channelUserId: phone },
       });
       for (const c of existing) {
+        const runs = await db.client.agentRun.findMany({ where: { conversationId: c.id } });
+        for (const run of runs) {
+          await db.client.toolCall.deleteMany({ where: { agentRunId: run.id } });
+        }
+        await db.client.agentRun.deleteMany({ where: { conversationId: c.id } });
         await db.client.message.deleteMany({ where: { conversationId: c.id } });
         await db.client.conversation.delete({ where: { id: c.id } });
       }

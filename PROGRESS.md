@@ -158,4 +158,42 @@ IXC/SGP continuam honestamente `ESTRUTURADO, NÃO VALIDADO`.
 
 ---
 
-*(Fases 6–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 6 — Inteligência
+
+**Status:** ✅ APROVADO. Gate `pnpm test agent claims knowledge` → **agent (8) + claims (7) + knowledge
+(6) = 21 testes verdes** (68/68 no total, sem regressão).
+
+Entregue:
+- `AIProvider` (interface): `MockAIProvider` (sempre disponível, classificação por palavra-chave +
+  resposta por template, `RunMode=DEMO`, **é o que roda de fato nesta sessão** —
+  `ISPAGENT_ANTHROPIC_API_KEY` vazia), `AnthropicProvider` (real, SDK oficial, lógica testável mas sem
+  chave para validar ponta a ponta), `OpenAIProvider` (stub estruturado, não implementado).
+- `AgentOrchestratorService`: turno completo — identidade → intenção → ferramenta permitida pela policy
+  → `ToolResult` → `Claim`s → resposta → auditoria. Documentado em `docs/agent-runtime.md`.
+- **Invariante de `Claim`/evidence (seção 3.4) implementado e testado isoladamente**
+  (`ClaimValidatorService`, `test/claims.spec.ts`, 7 testes): FACT sem evidência ou com evidência que não
+  resolve para um `facts.path` real é erro de runtime — testado com FACT válido, FACT sem evidência, FACT
+  apontando para `toolCallId` inexistente, FACT apontando para `facts.path` inexistente,
+  INFERENCE/RECOMMENDATION/UNKNOWN sem evidência (ok), e violação single-claim derrubando a validação
+  inteira.
+- Knowledge Base via full-text search real do Postgres (`KnowledgeService`, `KnowledgeTool`) — 3
+  documentos DEMO seedados. Documentado em `docs/knowledge-base.md`.
+- `test/agent.spec.ts` (8) cobre, ponta a ponta com dado real: P0.2 (pergunta financeira →
+  `BillingTool` → resposta com fato real), P0.7 (telefone ambíguo nunca chama ferramenta de conta,
+  outcome `HANDOFF`), consulta e criação de chamado real (`ACTION_EXECUTED`), bloqueio por policy
+  (`BLOCKED`), isolamento de tenant no fluxo completo.
+
+Dois bugs reais encontrados e corrigidos (registrados em `DECISIONS.md`):
+1. Testes rodando em paralelo (workers padrão do Jest) alternavam a mesma linha de
+   `TenantPolicyConfig` no Postgres real entre arquivos diferentes, causando falha não-determinística —
+   corrigido com `jest --runInBand` (suíte serializada).
+2. `resetConversationsFor` (helper de `conversation.spec.ts`) violava FK ao tentar apagar uma
+   `Conversation` que já tinha `AgentRun`/`ToolCall` (criados por `agent.spec.ts` usando o mesmo telefone
+   real do seed) — corrigido para apagar a árvore inteira na ordem certa.
+
+Limitações documentadas honestamente em `docs/agent-runtime.md`: sem loop multi-tool por turno ainda
+(`maxToolCallsPerTurn` não tem o que enforçar de verdade nesta fase), sem compactação de histórico.
+
+---
+
+*(Fases 7–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*

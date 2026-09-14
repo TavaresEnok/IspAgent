@@ -12,7 +12,7 @@
     "prisma:migrate:dev": "dotenv -e ../../.env -- prisma migrate dev",
     "prisma:migrate:deploy": "dotenv -e ../../.env -- prisma migrate deploy",
     "db:seed": "dotenv -e ../../.env -- ts-node -r tsconfig-paths/register prisma/seed.ts",
-    "test": "jest",
+    "test": "jest --runInBand",
     "lint": "echo \"lint: skipped (no eslint config in MVP)\" && exit 0"
   },
   "dependencies": {

@@ -8,6 +8,8 @@ import { IdentityModule } from './identity/identity.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { PolicyModule } from './policy/policy.module';
 import { ToolsModule } from './tools/tools.module';
+import { KnowledgeModule } from './knowledge/knowledge.module';
+import { AgentModule } from './agent/agent.module';
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { ToolsModule } from './tools/tools.module';
     ConversationModule,
     PolicyModule,
     ToolsModule,
+    KnowledgeModule,
+    AgentModule,
   ],
   controllers: [HealthController],
 })

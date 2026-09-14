@@ -1,11 +1,11 @@
 # STATE
-Fase atual: 6 — Inteligência (não iniciada)
-Última fase com gate APROVADO: 5 — ERP (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `pnpm --filter @ispagent/api test erp billing support` (16/16 verde, 49/49 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
-Próxima ação concreta: escrever os testes de aceitação da Fase 6 (AIProvider + MockAIProvider, Agent Orchestrator, invariante de Claim/evidence — P0.3, Knowledge Base) antes de implementar, seguindo o loop da seção 0.6. `ISPAGENT_ANTHROPIC_API_KEY` provavelmente vazia nesta sessão — MockAIProvider é o caminho testável; documentar honestamente se o AnthropicProvider real não puder ser validado ponta a ponta.
+Fase atual: 7 — PulseISP (não iniciada)
+Última fase com gate APROVADO: 6 — Inteligência (commit: ver próximo commit após este arquivo)
+Último comando executado com sucesso: `pnpm --filter @ispagent/api test agent claims knowledge` (21/21 verde, 68/68 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
+Próxima ação concreta: escrever os testes de aceitação da Fase 7 (PulseISPAdapter + MockPulseISPAdapter, comportamento coletivo vs individual, P0.4 — mesma conversa com a flag ligada/desligada) antes de implementar, seguindo o loop da seção 0.6. `ISPAGENT_PULSEISP_ENABLED=false` por padrão em .env — testar os dois modos explicitamente.
 Arquivos em edição incompleta: nenhum
-Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. Todas as integrações externas seguirão o padrão adapter+DEMO das seções 6 e 0.3, nunca "fingindo" validação que não ocorreu.
-Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11), P0.6 (policy bloqueia de fato, tools.spec.ts), idempotência (princípio 1.7, 3/3), ERP DEMO real contra Postgres seedado (erp/billing/support, 16/16)
+Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. Todas as integrações externas seguirão o padrão adapter+DEMO das seções 6 e 0.3, nunca "fingindo" validação que não ocorreu. AnthropicProvider implementado mas não validado ponta a ponta (sem API key nesta sessão) — MockAIProvider é o que roda de fato.
+Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + reafirmado em agent.spec.ts), P0.6 (policy bloqueia de fato), idempotência (princípio 1.7, 3/3), ERP DEMO real (16/16), invariante de Claim/evidence — seção 3.4 (7/7 em claims.spec.ts, reafirmado end-to-end em agent.spec.ts)
 
 ## Notas para a próxima sessão
 
@@ -56,4 +56,17 @@ Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11), P
   JS roda os field initializers ANTES da atribuição de parameter properties. Atribuir dentro do corpo do
   constructor, não como field initializer (ver `erp-tools.service.ts`).
 - `packages/shared`: `ToolStatus` ganhou `INVALID_INPUT` (Fase 4). Contrato só cresce, nunca muda
-  semântica de valor existente (seção 3.4) — se a Fase 6 precisar de outro status novo, mesma regra.
+  semântica de valor existente (seção 3.4) — se uma fase futura precisar de outro status novo, mesma regra.
+- `AgentOrchestratorService.handleMessage(conversationId, message)` é o ponto de entrada de um turno
+  completo — a Fase 9 (canais/UI) deve chamar ISSO a partir do webhook/endpoint de mensagem, não
+  reimplementar o fluxo. `AI_PROVIDER`/`ERP_ADAPTER` já resolvem Mock vs real por env var.
+  `ClaimValidatorService` é instanciado diretamente dentro do orchestrator (não injetado) — se isso
+  precisar virar configurável/injetável no futuro, trocar por DI é mecânico.
+- Testes de integração contra Postgres real rodam com `jest --runInBand` (serial) desde a Fase 6 — nunca
+  remover essa flag sem dar aos testes um tenant efêmero por teste (ver DECISIONS.md).
+- `AnthropicProvider`: qualquer novo parâmetro de constructor usado só para injeção manual em teste
+  precisa de `@Optional()` (`@nestjs/common`), senão o Nest quebra o boot tentando resolver como
+  dependência real (ver DECISIONS.md, Fase 6).
+- `PolicyEngineService` já tem os actions `plan.view`/`plan.change` catalogados; `PlanTool` desta sessão
+  só implementa VIEW (mudar de plano não está nas prioridades P0/P1 da seção 11) — se uma fase futura
+  implementar `plan.change` de verdade, a policy já está pronta, só falta o `execute()`.

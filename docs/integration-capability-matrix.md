@@ -22,6 +22,14 @@ oficial acessível para conferência ponto a ponto, o que a seção 0.2 proíbe 
 seção 6.1 passo 4) mas todo método lança erro explicando a ausência de documentação — nunca retorna dado
 fabricado se fosse chamado por engano.
 
+## AI Provider (seção 6.4)
+
+| Provider | Status |
+|---|---|
+| `MockAIProvider` | ✅ VALIDADO — é o que roda de fato nesta sessão (`ISPAGENT_ANTHROPIC_API_KEY` vazia), testado em `test/agent.spec.ts`, `test/claims.spec.ts` |
+| `AnthropicProvider` | ESTRUTURADO, NÃO VALIDADO end-to-end — implementado contra a documentação oficial do SDK `@anthropic-ai/sdk`, lógica de prompt/parsing testável, mas nenhuma chave real disponível nesta sessão para chamar a API de verdade |
+| `OpenAIProvider` | INDISPONÍVEL — stub que lança erro explícito, não implementado (ver DECISIONS.md) |
+
 ## Fonte da validação
 
 | Integração | Fonte consultada | Resultado |
@@ -30,6 +38,7 @@ fabricado se fosse chamado por engano.
 | SGP | nenhuma documentação oficial fornecida/acessível nesta sessão | idem |
 | PulseISP | produto irmão citado no prompt, sem OpenAPI compartilhado nesta sessão | `PulseISPAdapter` consumirá apenas o contrato `CustomerNetworkHealth` (seção 3.4); `RealPulseISPAdapter` fica como stub que lança `NOT_SUPPORTED` até o OpenAPI real chegar |
 | WhatsApp Cloud API | documentação pública da Meta existe e é consultável, mas nenhuma credencial (App Secret, token, verify token) foi fornecida nesta sessão para validar ponta a ponta | adapter/webhook handler serão estruturados seguindo o formato público conhecido da Cloud API (payloads de webhook, verificação de assinatura), mas o rótulo fica `NÃO VALIDADO end-to-end` até haver credencial real para testar |
+| Anthropic (Claude) | documentação oficial do `@anthropic-ai/sdk` | SDK integrado e lógica testável, mas sem `ISPAGENT_ANTHROPIC_API_KEY` nesta sessão para uma chamada real — ver `docs/privacy-and-ai.md` |
 
 ## Regra de atualização
 

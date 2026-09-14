@@ -140,6 +140,38 @@ satisfaz o TYPE CHECK em tempo de compilação.
 adicional, não a única fonte da garantia.
 **Reversibilidade:** alta.
 
+## 2026-09-14 — Fase 6 — testes rodam com `jest --runInBand`
+
+**Contexto:** `tools.spec.ts`, `billing.spec.ts`, `support.spec.ts` e `agent.spec.ts` alternam flags de
+`TenantPolicyConfig` (`canCreateTicket`, `canAccessBilling`) temporariamente e restauram no `finally`.
+Rodando em paralelo (workers default do Jest), um arquivo podia observar o flag no estado temporário de
+OUTRO arquivo (mesma linha na tabela real do Postgres, sem isolamento de transação entre testes) —
+`tools.spec.ts` falhava de forma não-determinística com `BLOCKED_BY_POLICY` em vez de `OK`.
+**Decisão:** `apps/api/package.json` roda `jest --runInBand` (serial, um processo). Corrige a causa raiz
+(estado real compartilhado, não FS/mock), não só sintoma.
+**Justificativa:** estes são testes de integração contra um Postgres real e compartilhado — paralelizar
+sem isolar transação por teste é inerentemente frágil; serializar é a correção direta e simples para o
+tamanho atual da suíte.
+**Reversibilidade:** alta — se a suíte crescer a ponto de o tempo serial incomodar, a alternativa é dar a
+cada teste seu próprio tenant efêmero (criar/derrubar tenant por teste) em vez de reusar
+`tnt_demo_alpha`/`tnt_demo_beta`.
+
+## 2026-09-14 — Fase 6 — `@Optional()` no parâmetro de teste do `AnthropicProvider`
+
+**Contexto:** `ispagent-api` falhava no boot em Docker com `Nest can't resolve dependencies of the
+AnthropicProvider`. `AnthropicProvider` recebe um `client?: Pick<Anthropic,'messages'>` opcional no
+constructor (só para injeção manual em teste, sem precisar de chave real) — sem `@Optional()`, o Nest
+tenta resolver esse parâmetro como uma dependência de DI de verdade e falha, mesmo o parâmetro sendo
+opcional em TypeScript.
+**Decisão:** `@Optional()` (`@nestjs/common`) no parâmetro.
+**Nota lateral (não é bug de produto):** durante a mesma investigação, `pnpm --filter @ispagent/api
+build` local passou a emitir um `dist/` incompleto (só os assets copiados, sem `.js` nenhum) — causa foi
+um `tsconfig.build.tsbuildinfo` (cache incremental do tsc) dessincronizado depois de várias rodadas de
+build/rm manuais nesta sessão. `.gitignore` já exclui `*.tsbuildinfo` e o Dockerfile nunca copia esse
+arquivo para dentro da imagem (`.dockerignore`), então isso nunca afetou o build em Docker nem afetaria
+uma call limpa — é só um artefato de iteração local, resolvido apagando o arquivo.
+**Reversibilidade:** alta.
+
 ## 2026-09-14 — Fase 1 — Portas e identidade do projeto
 
 **Decisão:** seguir literalmente a tabela da seção 2 (web 3000, api 3001, db 5433, redis 6380; banco

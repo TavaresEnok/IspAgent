@@ -316,7 +316,44 @@ async function main() {
     }
   }
 
-  console.log('[seed] concluído: 2 tenants, 3 usuários, 4 planos, 9 clientes/contratos.');
+  // ---- Knowledge Base (Fase 6) ----
+  const knowledgeDocs = [
+    {
+      id: 'kb_demo_internet_lenta',
+      title: 'Internet lenta: primeiros passos',
+      content:
+        'Se a internet está lenta, peça ao cliente para reiniciar o roteador (desligar por 10 segundos) ' +
+        'e testar a velocidade via cabo, não Wi-Fi. Muitos roteadores domésticos têm limite de dispositivos ' +
+        'simultâneos — perguntar quantos aparelhos estão conectados ajuda a diagnosticar.',
+      source: 'Base de conhecimento interna — Suporte Técnico',
+    },
+    {
+      id: 'kb_demo_segunda_via',
+      title: 'Como emitir segunda via de fatura',
+      content:
+        'A segunda via de fatura pode ser consultada diretamente pelo BillingTool a partir do contrato do ' +
+        'cliente. Faturas em atraso há mais de 15 dias podem gerar bloqueio financeiro automático.',
+      source: 'Base de conhecimento interna — Financeiro',
+    },
+    {
+      id: 'kb_demo_troca_senha_wifi',
+      title: 'Como o cliente troca a senha do Wi-Fi',
+      content:
+        'Oriente o cliente a acessar o painel do roteador (geralmente 192.168.0.1 ou 192.168.1.1) com o ' +
+        'usuário e senha padrão, que ficam na etiqueta do aparelho, e trocar a senha na seção de rede sem fio.',
+      source: 'Base de conhecimento interna — Suporte Técnico',
+    },
+  ];
+
+  for (const doc of knowledgeDocs) {
+    await prisma.knowledgeDocument.upsert({
+      where: { id: doc.id },
+      update: { tenantId: alpha.id, title: doc.title, content: doc.content, source: doc.source },
+      create: { id: doc.id, tenantId: alpha.id, title: doc.title, content: doc.content, source: doc.source },
+    });
+  }
+
+  console.log('[seed] concluído: 2 tenants, 3 usuários, 4 planos, 9 clientes/contratos, 3 documentos de KB.');
 }
 
 main()
