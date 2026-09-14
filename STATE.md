@@ -1,11 +1,11 @@
 # STATE
-Fase atual: 7 — PulseISP (não iniciada)
-Última fase com gate APROVADO: 6 — Inteligência (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `pnpm --filter @ispagent/api test agent claims knowledge` (21/21 verde, 68/68 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
-Próxima ação concreta: escrever os testes de aceitação da Fase 7 (PulseISPAdapter + MockPulseISPAdapter, comportamento coletivo vs individual, P0.4 — mesma conversa com a flag ligada/desligada) antes de implementar, seguindo o loop da seção 0.6. `ISPAGENT_PULSEISP_ENABLED=false` por padrão em .env — testar os dois modos explicitamente.
+Fase atual: 8 — Handoff e console (não iniciada)
+Última fase com gate APROVADO: 7 — PulseISP (commit: ver próximo commit após este arquivo)
+Último comando executado com sucesso: `pnpm --filter @ispagent/api test pulseisp` (9/9 verde, 77/77 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
+Próxima ação concreta: escrever os testes de aceitação da Fase 8 (fila humana, resumo estruturado de handoff, takeover, retorno para IA — P0.5) antes de implementar, seguindo o loop da seção 0.6. `Handoff` já existe no schema Prisma (id, tenantId, conversationId, reason, summary Json, status, assumedByUserId, assumedAt, returnedAt) — só falta o service/endpoint.
 Arquivos em edição incompleta: nenhum
 Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. Todas as integrações externas seguirão o padrão adapter+DEMO das seções 6 e 0.3, nunca "fingindo" validação que não ocorreu. AnthropicProvider implementado mas não validado ponta a ponta (sem API key nesta sessão) — MockAIProvider é o que roda de fato.
-Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + reafirmado em agent.spec.ts), P0.6 (policy bloqueia de fato), idempotência (princípio 1.7, 3/3), ERP DEMO real (16/16), invariante de Claim/evidence — seção 3.4 (7/7 em claims.spec.ts, reafirmado end-to-end em agent.spec.ts)
+Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + reafirmado), P0.6 (policy bloqueia de fato), idempotência (princípio 1.7, 3/3), ERP DEMO real (16/16), invariante de Claim/evidence — seção 3.4 (7/7, reafirmado end-to-end), P0.3 (resposta nunca cita fato ausente — reafirmado com cenário PulseISP coletivo), P0.4 (mesma conversa com PulseISP ligado/desligado, 3/3 em pulseisp.spec.ts)
 
 ## Notas para a próxima sessão
 
@@ -70,3 +70,14 @@ Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + r
 - `PolicyEngineService` já tem os actions `plan.view`/`plan.change` catalogados; `PlanTool` desta sessão
   só implementa VIEW (mudar de plano não está nas prioridades P0/P1 da seção 11) — se uma fase futura
   implementar `plan.change` de verdade, a policy já está pronta, só falta o `execute()`.
+- `AgentOrchestratorService` agora recebe 8 argumentos no constructor (`PULSEISP_ADAPTER` é o último) —
+  qualquer teste que instancia manualmente (fora do Nest DI) precisa passar um `PulseISPAdapter` (ex.:
+  `new MockPulseISPAdapter(db)`), senão TS acusa "Expected 8 arguments".
+- `ISPAGENT_PULSEISP_ENABLED` é lido diretamente de `process.env` dentro do orchestrator (função
+  `pulseIspEnabled()`), não via config service — testes que precisam alternar o modo mutam
+  `process.env.ISPAGENT_PULSEISP_ENABLED` diretamente e restauram no `afterAll` (ver
+  `test/pulseisp.spec.ts`). Mesma convenção que `ISPAGENT_ERP_PROVIDER`/`ISPAGENT_AI_PROVIDER`.
+- Handoff (Fase 8) deve reaproveitar `AgentDecision.outcome === 'HANDOFF'` como sinal de entrada na fila
+  — o orquestrador já marca isso corretamente (identidade ambígua/não encontrada em intenção de conta,
+  ou violação do invariante de Claim); a Fase 8 só precisa CRIAR o registro `Handoff` com o resumo
+  estruturado quando isso acontece, não redecidir quando um handoff é necessário.

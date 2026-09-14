@@ -9,6 +9,8 @@ import { ErpToolsService } from '../tools/erp-tools.service';
 import { createKnowledgeSearchTool } from '../knowledge/knowledge-tool';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { AI_PROVIDER, AIProvider } from '../integrations/ai/ai-provider.interface';
+import { PULSEISP_ADAPTER, PulseISPAdapter } from '../integrations/pulseisp/pulseisp-adapter.interface';
+import { createPulseISPQueryTool } from '../tools/pulseisp-tool';
 import { ClaimValidatorService, ClaimInvariantViolationError } from './claim-validator.service';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
@@ -16,6 +18,12 @@ const PROMPT_VERSION = 'agent-v1-2026-09-14';
 const ACCOUNT_INTENTS: Intent[] = [
   'FINANCEIRO', 'SEGUNDA_VIA', 'PAGAMENTO', 'BLOQUEIO', 'PLANO', 'CHAMADO', 'STATUS_CHAMADO',
 ];
+
+const NETWORK_INTENTS: Intent[] = ['SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'SUPORTE_INTERNET'];
+
+function pulseIspEnabled(): boolean {
+  return process.env.ISPAGENT_PULSEISP_ENABLED === 'true';
+}
 
 /**
  * Agent Orchestrator (seção 3.3, 5.2, 6.4). Um turno completo:
@@ -27,6 +35,7 @@ const ACCOUNT_INTENTS: Intent[] = [
 @Injectable()
 export class AgentOrchestratorService {
   private readonly claimValidator = new ClaimValidatorService();
+  private readonly pulseIspTool;
 
   constructor(
     private readonly db: TenantPrismaService,
@@ -36,7 +45,10 @@ export class AgentOrchestratorService {
     private readonly erpTools: ErpToolsService,
     private readonly knowledgeService: KnowledgeService,
     @Inject(AI_PROVIDER) private readonly ai: AIProvider,
-  ) {}
+    @Inject(PULSEISP_ADAPTER) pulseisp: PulseISPAdapter,
+  ) {
+    this.pulseIspTool = createPulseISPQueryTool(pulseisp);
+  }
 
   async handleMessage(conversationId: string, customerMessage: string): Promise<AgentDecision> {
     const tenantId = currentTenantId();
@@ -86,6 +98,14 @@ export class AgentOrchestratorService {
         customerMessage,
       );
       toolResults.push(toolResult);
+    } else if (accountAvailable && NETWORK_INTENTS.includes(classification.intent) && pulseIspEnabled()) {
+      // P0.4: só entra aqui quando a flag está ligada — desligada, cai no ramo de KnowledgeTool abaixo,
+      // exatamente como antes da Fase 7 (produto funciona sem PulseISP, seção 3.2).
+      const decision = await this.policy.evaluate(this.pulseIspTool.action);
+      policyDecisions.push(decision);
+      toolResults.push(
+        await this.executor.run(this.pulseIspTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+      );
     } else {
       const kbTool = createKnowledgeSearchTool(this.knowledgeService);
       const decision = await this.policy.evaluate(kbTool.action);

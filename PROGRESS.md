@@ -196,4 +196,30 @@ Limitações documentadas honestamente em `docs/agent-runtime.md`: sem loop mult
 
 ---
 
-*(Fases 7–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 7 — PulseISP
+
+**Status:** ✅ APROVADO. Gate `pnpm test pulseisp` → **9/9 testes verdes** (77/77 no total, sem
+regressão), cobrindo os dois modos da flag (P0.4).
+
+Entregue:
+- `PulseISPAdapter` (interface) consumindo só `CustomerNetworkHealth` (contrato já travado na seção
+  3.4) — `MockPulseISPAdapter` (telemetria determinística por contrato, sempre funciona) e
+  `RealPulseISPAdapter` (stub — sem OpenAPI validado nesta sessão).
+- `PulseISPTool`: monta `facts` de forma diferente para incidente coletivo (`ctt_demo_d`, escopo `PON`,
+  `affectedCustomers > 1`) vs degradação individual (`ctt_demo_c`, sinal óptico em piora) —
+  estruturalmente, não por prompt, garante que a resposta nunca cita um fato que não veio do
+  `ToolResult` (**P0.3**, testado diretamente com o cenário coletivo: facts sem `rxDbm`, resposta do
+  `MockAIProvider` nunca menciona "óptico").
+- `AgentOrchestratorService` ganhou roteamento para intenções de rede
+  (`SEM_CONEXAO`/`INTERNET_LENTA`/`QUEDAS`/`SUPORTE_INTERNET`): com `ISPAGENT_PULSEISP_ENABLED=true` e
+  identidade confirmada, chama `PulseISPTool`; desligada (default), cai para `KnowledgeTool` — **mesma
+  conversa testada nos dois modos** (**P0.4**), sem nenhuma regressão do comportamento da Fase 6.
+- `test/pulseisp.spec.ts` (9): adapter (4), tool/P0.3 (2), orchestrator com flag ligada/desligada (3).
+- `docs/pulseisp-integration.md`. Capability matrix: Health Score passa a `VALIDADO` (mock).
+
+Nenhum bug novo nesta fase — só ajuste de assinatura em `test/agent.spec.ts` (novo parâmetro do
+constructor do orchestrator).
+
+---
+
+*(Fases 8–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*

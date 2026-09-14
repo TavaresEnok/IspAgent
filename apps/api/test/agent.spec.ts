@@ -5,6 +5,7 @@ import { PolicyEngineService } from '../src/policy/policy-engine.service';
 import { ToolExecutorService } from '../src/tools/tool-executor.service';
 import { MockERPAdapter } from '../src/integrations/erp/mock-erp.adapter';
 import { ErpToolsService } from '../src/tools/erp-tools.service';
+import { MockPulseISPAdapter } from '../src/integrations/pulseisp/mock-pulseisp.adapter';
 import { KnowledgeService } from '../src/knowledge/knowledge.service';
 import { MockAIProvider } from '../src/integrations/ai/mock-ai.provider';
 import { ConversationService } from '../src/conversation/conversation.service';
@@ -36,8 +37,9 @@ describe('AgentOrchestratorService', () => {
     const identity = new IdentityResolutionService(db);
     const conversation = new ConversationService(db, identity);
     const ai = new MockAIProvider();
+    const pulseisp = new MockPulseISPAdapter(db);
 
-    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai);
+    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp);
   });
 
   afterAll(async () => {

@@ -15,7 +15,7 @@ oficial acessível para conferência ponto a ponto, o que a seção 0.2 proíbe 
 | Consultar plano | ✅ VALIDADO (`test/erp.spec.ts`, `PlanTool`) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
 | Fatura / segunda via | ✅ VALIDADO (`BillingTool`, `test/billing.spec.ts` — inclui P0.2) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
 | Abrir chamado | ✅ VALIDADO (`SupportTool`, idempotente, `test/support.spec.ts`) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
-| Health Score | — | — | — | NÃO VALIDADO (fase 7, mock apenas — sem OpenAPI real do PulseISP disponível) | — |
+| Health Score | — | — | — | ✅ VALIDADO (mock — real segue INDISPONÍVEL, sem OpenAPI do PulseISP disponível; `test/pulseisp.spec.ts`, P0.3/P0.4) | — |
 | Receber mensagem | — | — | — | — | INDISPONÍVEL (fase 9 estrutura o adapter/webhook; sem credencial Meta, fica `NÃO VALIDADO end-to-end` mesmo depois de implementado) |
 
 "ESTRUTURADO, NÃO VALIDADO" (IXC/SGP) = a classe implementa `ERPAdapter` (`IXCAdapter`/`SGPAdapter`,
