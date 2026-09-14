@@ -108,6 +108,38 @@ Prisma (`prisma/schema.prisma`) para não depender só da detecção automática
 normativo da seção 2), já que o conflito é específico deste host, não do produto.
 **Reversibilidade:** trivial — qualquer ambiente sem esse conflito usa o padrão de `.env.example`.
 
+## 2026-09-14 — Fase 4 — `ToolCall.data` persistido (migration `add_tool_call_data`)
+
+**Contexto:** o teste de idempotência (`test/idempotency.spec.ts`) encontrou que um replay via
+`idempotencyKey` devolvia `data: undefined` mesmo quando a primeira execução tinha retornado um payload
+real — a tabela `tool_calls` só guardava `facts`/`error`/`status`/`source`, nunca o `data` do
+`ToolResult`.
+**Decisão:** adicionar coluna `data Json?` a `ToolCall` (migration `20260914202237_add_tool_call_data`) e
+persistir/reidratar o campo no `ToolExecutorService`.
+**Justificativa:** princípio 1.7 (idempotência em toda escrita) exige que um retry devolva o mesmo
+resultado observável da primeira execução — não só o mesmo `status`, mas o mesmo payload que o agente
+usaria para responder ao cliente (ex.: o ID do chamado criado).
+**Reversibilidade:** alta — coluna aditiva, nenhuma migration anterior precisou mudar.
+
+## 2026-09-14 — Fase 4 — `ToolStatus` ganha `INVALID_INPUT`
+
+**Decisão:** adicionado `INVALID_INPUT` ao union `ToolStatus` em `packages/shared` para representar
+entrada rejeitada pela validação de schema (Zod), antes mesmo da Policy Engine avaliar a ação.
+**Justificativa:** nenhum dos status existentes (`NOT_SUPPORTED`, `UPSTREAM_ERROR`, etc.) descreve
+corretamente "o agente mandou um argumento inválido" — inventar um novo valor é crescer o contrato, não
+mudar a semântica de um já existente (permitido pela seção 3.4).
+**Reversibilidade:** alta.
+
+## 2026-09-14 — Fase 4 — `tenantId` explícito em todo `create()`, extensão como defesa extra
+
+**Contexto:** o tipo gerado pelo Prisma para `XCreateInput` exige `tenantId` no `data` de qualquer
+`create()` em modelo tenant-scoped — a extensão de tenant-scoping injeta o valor em RUNTIME, mas isso não
+satisfaz o TYPE CHECK em tempo de compilação.
+**Decisão (reafirmada da Fase 3, agora também em `tool-executor.service.ts`):** todo `create()` passa
+`tenantId` explicitamente (via `currentTenantId()`), com a extensão do Prisma como camada de segurança
+adicional, não a única fonte da garantia.
+**Reversibilidade:** alta.
+
 ## 2026-09-14 — Fase 1 — Portas e identidade do projeto
 
 **Decisão:** seguir literalmente a tabela da seção 2 (web 3000, api 3001, db 5433, redis 6380; banco

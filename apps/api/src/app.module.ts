@@ -6,6 +6,8 @@ import { AuthModule } from './auth/auth.module';
 import { TenancyModule } from './tenancy/tenancy.module';
 import { IdentityModule } from './identity/identity.module';
 import { ConversationModule } from './conversation/conversation.module';
+import { PolicyModule } from './policy/policy.module';
+import { ToolsModule } from './tools/tools.module';
 
 @Module({
   imports: [
@@ -15,6 +17,8 @@ import { ConversationModule } from './conversation/conversation.module';
     TenancyModule,
     IdentityModule,
     ConversationModule,
+    PolicyModule,
+    ToolsModule,
   ],
   controllers: [HealthController],
 })

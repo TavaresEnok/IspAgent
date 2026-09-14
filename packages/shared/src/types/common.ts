@@ -19,4 +19,7 @@ export type ToolStatus =
   | 'NEEDS_CONFIRMATION'
   | 'NOT_SUPPORTED'
   | 'UPSTREAM_ERROR'
-  | 'TIMEOUT';
+  | 'TIMEOUT'
+  // Adicionado na Fase 4 (crescimento do contrato, não mudança de semântica existente — seção 3.4):
+  // entrada rejeitada pela validação de schema (Zod), antes de a ferramenta sequer avaliar policy.
+  | 'INVALID_INPUT';

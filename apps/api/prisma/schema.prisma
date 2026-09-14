@@ -315,6 +315,7 @@ model ToolCall {
   args           Json
   status         String
   source         Json
+  data           Json?
   facts          Json     @default("[]")
   error          Json?
   idempotencyKey String?

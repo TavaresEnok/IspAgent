@@ -104,4 +104,33 @@ defesa em profundidade, não a única fonte da garantia.
 
 ---
 
-*(Fases 4–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 4 — Tool layer e policy
+
+**Status:** ✅ APROVADO. Gate `pnpm test tools policy idempotency` → **14/14 testes verdes** (33/33 no
+total, sem regressão nas fases anteriores).
+
+Entregue:
+- `PolicyEngineService` (`apps/api/src/policy/`): catálogo de ações → tier/flag em `policy-actions.ts`,
+  bloqueio estático de tier `ADMIN` (nunca depende de config de tenant — fora de escopo do MVP, seção
+  14), confirmação obrigatória por padrão em `WRITE_SENSITIVE`, decisão sempre rastreável
+  (tenantId/policyVersion/evaluatedAt).
+- `ToolExecutorService` (`apps/api/src/tools/`): pipeline completo da seção 4 — Schema Validation (Zod)
+  → Policy Engine → Confirmation Check → Execução com timeout → `ToolResult` → `ToolCall`/`AuditLog`
+  persistidos. **P0.6 provado**: teste com espião no adapter mostrando zero chamadas quando a policy
+  bloqueia.
+- Idempotência (princípio 1.7): retry com a mesma `idempotencyKey` nunca reexecuta a ferramenta nem
+  duplica o `ToolCall` — devolve o resultado (incluindo `data`) já persistido da primeira execução.
+  Isolada por tenant (a mesma chave em tenants diferentes não colide).
+- `test/tools.spec.ts` (5), `test/policy.spec.ts` (6), `test/idempotency.spec.ts` (3).
+
+Um bug real encontrado e corrigido (registrado em `DECISIONS.md`): `ToolCall` não persistia o campo
+`data` do `ToolResult`, então um replay idempotente devolvia `status` correto mas `data: undefined` —
+corrigido com a migration `20260914202237_add_tool_call_data`.
+
+Ferramentas usadas nos testes (`TestLookupTool`, `TestCreateTicketTool`, `TestUnlockTool`) são fixtures
+só para exercitar o pipeline — as ferramentas reais (`BillingTool`, `SupportTool`, etc., ligadas a um
+`ERPAdapter`) são entregável da Fase 5.
+
+---
+
+*(Fases 5–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
