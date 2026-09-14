@@ -79,4 +79,29 @@ Gate: `pnpm db:migrate && pnpm db:seed && pnpm test tenancy` — resultado abaix
 
 ---
 
-*(Fases 3–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 3 — Conversa e identidade
+
+**Status:** ✅ APROVADO. Gate `pnpm test identity conversation` → **19/19 testes verdes** (11 novos +
+8 de tenancy, sem regressão).
+
+Entregue:
+- `IdentityResolutionService` (`apps/api/src/identity/`): resolução por telefone, desambiguação por
+  CPF/CNPJ, e os três resultados de primeira classe da seção 5.1 — resolvido (`PHONE_EXACT`/`DOCUMENT`,
+  `HIGH`/`MEDIUM` conforme o cliente tenha exatamente um contrato ativo ou não), `AMBIGUOUS` (lista de
+  candidatos, nunca resolve sozinho) e `NOT_FOUND`.
+- `ConversationService` (`apps/api/src/conversation/`): `findOrCreateConversation` idempotente (não
+  duplica conversa por canal+usuário), `resolveIdentity` idempotente (não reexecuta a resolução uma vez
+  persistida — provado com spy contando exatamente 1 chamada), `appendMessage`.
+- `test/identity.spec.ts` (6 testes) e `test/conversation.spec.ts` (5 testes): cobrem P0.1 (cliente
+  conhecido resolvido no contrato certo), P0.7 (`cus_demo_g`/`cus_demo_g2` — telefone ambíguo nunca
+  resolve sozinho; telefone não cadastrado nunca vincula a ninguém — nem na tabela `Customer`, nem
+  persistido na `Conversation`), e reafirma isolamento de tenant no contexto de identidade.
+
+Nenhum bug de infraestrutura novo nesta fase — os três já corrigidos na Fase 1/2 continuam válidos.
+Único ajuste: `tenantId` passado explicitamente em todo `create()` de domínio (além da extensão do
+Prisma injetar em runtime), porque o tipo gerado pelo Prisma exige o campo no `data` — a extensão vira
+defesa em profundidade, não a única fonte da garantia.
+
+---
+
+*(Fases 4–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
