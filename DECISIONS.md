@@ -172,6 +172,43 @@ arquivo para dentro da imagem (`.dockerignore`), então isso nunca afetou o buil
 uma call limpa — é só um artefato de iteração local, resolvido apagando o arquivo.
 **Reversibilidade:** alta.
 
+## 2026-09-14 — Fase 10 — `verify.ps1` salvo como UTF-8 com BOM
+
+**Contexto:** `powershell.exe -File scripts\verify.ps1` falhava com "cadeia de caracteres não tem o
+terminador" — um erro de parser em cascata, sem relação óbvia com o conteúdo. Causa raiz: o arquivo foi
+salvo como UTF-8 SEM BOM; Windows PowerShell 5.1 não detecta UTF-8 de forma confiável em scripts com
+caracteres acentuados/travessão sem BOM, e mis-interpreta bytes multi-byte como parte da gramática.
+**Decisão:** `verify.ps1` é salvo como UTF-8 **com BOM** (`EF BB BF` nos primeiros 3 bytes). Qualquer
+edição futura do arquivo por uma ferramenta que reescreva sem preservar o BOM precisa reconvertê-lo
+(`Get-Content -Raw -Encoding UTF8 | Set-Content -Encoding UTF8` no Windows PowerShell 5.1 reescreve com
+BOM automaticamente).
+**Reversibilidade:** alta.
+
+## 2026-09-14 — Fase 10 — sem `2>&1` em comando nativo dentro de `verify.ps1`
+
+**Contexto:** com `$ErrorActionPreference = 'Stop'` (topo do script), `pnpm ... 2>&1` e
+`docker compose down ... 2>&1` faziam qualquer linha de stderr de um processo nativo virar um erro
+TERMINANTE (`NativeCommandError`), derrubando o step mesmo quando o comando de fato teve exit code 0 —
+Jest em particular escreve a maior parte da sua saída em stderr.
+**Decisão:** `docker compose down` não redireciona mais stderr (deixa fluir direto pro console, que não
+é tratado como stream de erro do PowerShell). Para `pnpm test` (onde a saída de stderr precisa ser
+capturada para `tests.txt`), baixa `$ErrorActionPreference` para `'Continue'` só durante a chamada,
+restaurando logo depois, e checa `$LASTEXITCODE` manualmente.
+**Reversibilidade:** alta — é puramente um detalhe de como o PowerShell 5.1 trata streams nativas.
+
+## 2026-09-14 — Fase 10 — telefone do cenário de Handoff é gerado por execução, não fixo
+
+**Contexto:** rodar `verify.ps1` uma segunda vez (sem `-Fresh`) com o telefone fixo `+5511999990007`
+(ambíguo) falhava: a conversa da rodada anterior já tinha virado `HUMAN_ACTIVE` (o próprio passo 15 já
+tinha "assumido" ela), então `findOrCreateConversation` reaproveitava essa conversa e a IA
+corretamente ficava em silêncio — só que o script esperava um `HANDOFF` novo.
+**Decisão:** o passo de Handoff gera um telefone aleatório nunca visto (`+5511` + número aleatório) a
+cada execução — resolve para `NOT_FOUND`, que aciona o mesmo caminho de `HANDOFF` que `AMBIGUOUS` para
+uma intenção que exige conta confirmada (P0.7 cobre os dois).
+**Justificativa:** seção 12 exige que o script seja "idempotente, re-executável" — reusar um
+identificador fixo entre execuções viola isso assim que aquele estado avança para `HUMAN_ACTIVE`.
+**Reversibilidade:** alta.
+
 ## 2026-09-14 — Fase 1 — Portas e identidade do projeto
 
 **Decisão:** seguir literalmente a tabela da seção 2 (web 3000, api 3001, db 5433, redis 6380; banco

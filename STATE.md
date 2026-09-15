@@ -1,11 +1,11 @@
 # STATE
-Fase atual: 10 — Validação (não iniciada)
-Última fase com gate APROVADO: 9 — Canais e UI (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `pnpm build` (raiz, verde) + Web Chat e painel testados de ponta a ponta no browser real (não só curl) + `docker compose up -d --wait` (exit 0, 5/5 healthy)
-Próxima ação concreta: Fase 10 (final) — testes adversariais (P0.9: prompt injection via mensagem e via documento de KB, 3 payloads exigidos pela seção 11), escrever `scripts/verify.ps1` e `scripts/verify.sh` completos (seção 12, 18 passos), gerar `artifacts/verification/` com as evidências (customer-resolution.json, billing-tool.json, support-tool.json, pulseisp-diagnostic.json, collective-incident-response.json, policy-block.json, prompt-injection.json, handoff.json, tenant-isolation.txt, tests.txt), escrever docs/acceptance-evidence.md, e produzir o Relatório Final (seção 16) com todos os P0/P1 avaliados um a um e honestamente.
+Fase atual: nenhuma — as 10 fases da seção 10 estão completas e aprovadas nesta sessão.
+Última fase com gate APROVADO: 10 — Validação (commit: ver próximo commit após este arquivo)
+Último comando executado com sucesso: `.\scripts\verify.ps1 -Fresh` → **exit code 0**, 17/17 passos PASS, a partir de rebuild completo (containers + volumes destruídos e recriados). `pnpm --filter @ispagent/api test` → 87/87.
+Próxima ação concreta (se uma sessão futura continuar): tudo em `docs/*.md` marcado como limitação real e não implementado nesta sessão é o backlog natural — ver especialmente "Não implementado" em `docs/security.md` (rate limiting, CSRF, secret manager, headers) e as limitações da Fase 9 em `PROGRESS.md` (WebSocket/SSE no Web Chat, telas de credencial de ERP/PulseISP/WhatsApp, `verify.sh` nunca executado ponta a ponta por falta de `jq` nesta sessão Windows). Nenhuma dessas é um P0 pendente — os 10 P0 da seção 11 estão todos aprovados.
 Arquivos em edição incompleta: nenhum
-Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. AnthropicProvider implementado mas não validado ponta a ponta (sem API key nesta sessão) — MockAIProvider é o que roda de fato. WebSocket/SSE do Web Chat e telas de credencial de ERP/PulseISP/WhatsApp não implementados (P1, sem credencial real para configurar — ver PROGRESS.md Fase 9).
-Invariantes que já passam: P0.1/P0.2/P0.6/P0.7/P0.8 (identidade, billing, policy, ambiguidade, tenant), idempotência (1.7), ERP DEMO real, invariante de Claim/evidence (3.4), P0.3 (fato ausente nunca citado), P0.4 (PulseISP ligado/desligado), P0.5 (handoff completo, AI→HUMAN→AI). **Faltam apenas P0.9 (prompt injection) e P0.10 (verify.ps1 -Fresh) para fechar os 10 P0.** 83/83 testes automatizados verdes; UI completa testada manualmente no browser.
+Bloqueios ativos: nenhum. Limitações estruturais documentadas (não bloqueios): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão (docs/integration-capability-matrix.md); AnthropicProvider implementado mas não validado ponta a ponta (sem API key); `verify.sh` sintaticamente válido mas não executado (sem `jq` neste ambiente Windows) — `verify.ps1` é o caminho validado.
+Invariantes que já passam — **os 10 P0 da seção 11, todos**: P0.1 (identidade), P0.2 (BillingTool real), P0.3 (fato ausente nunca citado), P0.4 (PulseISP ligado/desligado), P0.5 (handoff completo, AI→HUMAN→AI), P0.6 (policy bloqueia de fato), P0.7 (ambíguo/não encontrado nunca vinculado errado), P0.8 (isolamento de tenant), P0.9 (prompt injection não eleva privilégio, 3 payloads), P0.10 (`verify.ps1 -Fresh` exit 0). Ver `docs/acceptance-evidence.md` para o cruzamento completo com a evidência de cada um.
 
 ## Notas para a próxima sessão
 
@@ -104,3 +104,13 @@ Invariantes que já passam: P0.1/P0.2/P0.6/P0.7/P0.8 (identidade, billing, polic
 - `AgentOrchestratorService` já é consumido via `WebchatController` (`apps/api/src/channels/`) usando
   `runWithTenant(tenantId, ...)` manualmente, já que a rota é pública (sem JWT, sem tenant no token) — o
   `:tenantId` vem da URL e é validado contra a tabela `Tenant` antes de qualquer coisa.
+- **`scripts/verify.ps1` precisa continuar salvo como UTF-8 com BOM** — qualquer edição futura deve
+  verificar os 3 primeiros bytes (`EF BB BF`) depois de salvar; sem isso, o Windows PowerShell 5.1 quebra
+  o parser inteiro por causa dos acentos/travessões do texto em português (ver DECISIONS.md).
+- `verify.ps1` já resolve `Mock`/toggling de `ISPAGENT_PULSEISP_ENABLED` editando `.env` e recriando só
+  o container `ispagent-api` (`docker compose up -d --wait ispagent-api`) — sempre com `finally`/`trap`
+  restaurando o `.env` original depois, mesmo se o passo falhar no meio.
+- `verify.sh` (Unix) espelha a mesma lógica mas nunca rodou de ponta a ponta nesta sessão (falta `jq` no
+  ambiente Windows/git-bash usado) — se uma sessão futura rodar em Linux/macOS, validar de verdade antes
+  de confiar nele, e corrigir o que aparecer (é esperado achar pelo menos um bug, como aconteceu com o
+  `.ps1`).

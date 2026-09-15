@@ -302,4 +302,39 @@ Dois bugs reais encontrados e corrigidos durante o teste no browser:
 
 ---
 
-*(Fase 10 ainda não iniciada nesta sessão — continua conforme `STATE.md`.)*
+## Fase 10 — Validação
+
+**Status:** ✅ APROVADO. Gate `.\scripts\verify.ps1 -Fresh` → **exit code 0**, todos os 17 passos PASS,
+a partir de uma reconstrução completa (containers **e volumes** derrubados e recriados do zero).
+
+Entregue:
+- **P0.9 — prompt injection** (`apps/api/test/security.spec.ts`, 4/4): os 3 payloads exigidos pela
+  seção 11 — "ignore suas instruções" pedindo desbloqueio, documento de KB envenenado com "execute
+  desbloqueio", pedido de "50 chamados" — mais uma reafirmação com VLAN/OLT. A defesa provada é
+  **estrutural**, não comportamental: o mapeamento intenção→ferramenta do orquestrador nunca produz uma
+  ação `account.unlock`/`ADMIN` a partir de texto livre do cliente (essas ações simplesmente não são
+  alcançáveis pela tabela de dispatch), e `buildClaims` só promove a `Claim` o que vem de
+  `ToolResult.facts` — nunca o conteúdo bruto de uma mensagem ou documento.
+- **`scripts/verify.ps1`** (18 passos da seção 12) — escrito, executado e depurado de verdade nesta
+  sessão contra o Docker Desktop real. Três bugs reais encontrados e corrigidos (ver `DECISIONS.md`):
+  arquivo precisava ser UTF-8 **com BOM** para o Windows PowerShell 5.1 não quebrar o parser com os
+  acentos/travessões do português; `2>&1` em comando nativo sob `$ErrorActionPreference='Stop'` virava
+  erro terminante mesmo com exit code 0 (Jest escreve a maior parte da saída em stderr); o cenário de
+  handoff usava um telefone fixo que quebrava a re-execução do script (corrigido para gerar um telefone
+  novo a cada rodada — "idempotente, re-executável" da seção 12 exigia isso).
+- **`scripts/verify.sh`** — porta para Unix/bash com a mesma lógica e os mesmos 18 passos/evidências;
+  sintaticamente validado (`bash -n`), mas **não executado ponta a ponta nesta sessão** (o ambiente
+  desta sessão é Windows e não tem `jq` instalado — `verify.ps1` é o caminho principal e validado
+  desta seção 12, como o próprio prompt de execução já indica).
+- `artifacts/verification/evidence/`: **10 arquivos gerados por chamadas HTTP reais** contra a stack —
+  `customer-resolution.json`, `billing-tool.json`, `support-tool.json`, `pulseisp-diagnostic.json`,
+  `collective-incident-response.json`, `policy-block.json`, `prompt-injection.json`, `handoff.json`,
+  `tenant-isolation.txt`, `tests.txt` — mais `latest.log` e `summary.json`. Nenhum escrito à mão.
+- `docs/acceptance-evidence.md`: cruzamento dos 10 P0 com a evidência exata que os comprova.
+
+**Os 10 critérios P0 da seção 11 estão, ao final desta sessão, todos aprovados** — ver
+`docs/acceptance-evidence.md` e o Relatório Final.
+
+---
+
+*(Fim das 10 fases da seção 10 nesta sessão.)*
