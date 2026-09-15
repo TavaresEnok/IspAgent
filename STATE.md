@@ -1,11 +1,11 @@
 # STATE
-Fase atual: 9 — Canais e UI (não iniciada)
-Última fase com gate APROVADO: 8 — Handoff e console (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `pnpm --filter @ispagent/api test handoff` (6/6 verde, 83/83 no total) e `docker compose up -d --wait` (exit 0, 5/5 healthy)
-Próxima ação concreta: Fase 9 é a maior restante — Web Chat DEMO (canal obrigatório, 100% local) + painel admin completo (seção 10.1: Login, Dashboard, Conversas, Fila humana, Detalhe da conversa com timeline, Clientes, Knowledge Base, Integrações, Config ERP, Config PulseISP, Políticas, Ferramentas, Config do agente, Usuários, Auditoria) + endpoints HTTP no apps/api expondo AgentOrchestratorService/HandoffService (hoje só são usados via chamada direta de serviço nos testes, não existe controller/rota ainda). Gate: `pnpm build` verde e Web Chat respondendo ponta a ponta. Priorizar: (1) endpoints REST mínimos (auth já existe; faltam conversations/messages/handoff/customers), (2) Web Chat, (3) telas de admin essenciais (Dashboard, Conversas, Fila humana, Detalhe), (4) telas de configuração restantes se houver tempo.
+Fase atual: 10 — Validação (não iniciada)
+Última fase com gate APROVADO: 9 — Canais e UI (commit: ver próximo commit após este arquivo)
+Último comando executado com sucesso: `pnpm build` (raiz, verde) + Web Chat e painel testados de ponta a ponta no browser real (não só curl) + `docker compose up -d --wait` (exit 0, 5/5 healthy)
+Próxima ação concreta: Fase 10 (final) — testes adversariais (P0.9: prompt injection via mensagem e via documento de KB, 3 payloads exigidos pela seção 11), escrever `scripts/verify.ps1` e `scripts/verify.sh` completos (seção 12, 18 passos), gerar `artifacts/verification/` com as evidências (customer-resolution.json, billing-tool.json, support-tool.json, pulseisp-diagnostic.json, collective-incident-response.json, policy-block.json, prompt-injection.json, handoff.json, tenant-isolation.txt, tests.txt), escrever docs/acceptance-evidence.md, e produzir o Relatório Final (seção 16) com todos os P0/P1 avaliados um a um e honestamente.
 Arquivos em edição incompleta: nenhum
-Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. Todas as integrações externas seguirão o padrão adapter+DEMO das seções 6 e 0.3, nunca "fingindo" validação que não ocorreu. AnthropicProvider implementado mas não validado ponta a ponta (sem API key nesta sessão) — MockAIProvider é o que roda de fato.
-Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + reafirmado), P0.6 (policy bloqueia de fato), idempotência (princípio 1.7, 3/3), ERP DEMO real (16/16), invariante de Claim/evidence — seção 3.4 (7/7, reafirmado end-to-end), P0.3 (resposta nunca cita fato ausente), P0.4 (PulseISP ligado/desligado, 3/3), P0.5 (handoff completo — resumo real, fila, takeover bloqueia AgentRun, AI→HUMAN→AI, 6/6 em handoff.spec.ts)
+Bloqueios ativos: nenhum bloqueio técnico. Limitação estrutural (não bloqueio): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão — ver docs/integration-capability-matrix.md. AnthropicProvider implementado mas não validado ponta a ponta (sem API key nesta sessão) — MockAIProvider é o que roda de fato. WebSocket/SSE do Web Chat e telas de credencial de ERP/PulseISP/WhatsApp não implementados (P1, sem credencial real para configurar — ver PROGRESS.md Fase 9).
+Invariantes que já passam: P0.1/P0.2/P0.6/P0.7/P0.8 (identidade, billing, policy, ambiguidade, tenant), idempotência (1.7), ERP DEMO real, invariante de Claim/evidence (3.4), P0.3 (fato ausente nunca citado), P0.4 (PulseISP ligado/desligado), P0.5 (handoff completo, AI→HUMAN→AI). **Faltam apenas P0.9 (prompt injection) e P0.10 (verify.ps1 -Fresh) para fechar os 10 P0.** 83/83 testes automatizados verdes; UI completa testada manualmente no browser.
 
 ## Notas para a próxima sessão
 
@@ -91,3 +91,16 @@ Invariantes que já passam: P0.8 (tenant, 8/8), P0.1/P0.7 (identidade, 11/11 + r
 - Padrão de limpeza de FK em testes que criam `Conversation` ad-hoc: sempre apagar na ordem `ToolCall →
   AgentRun/Handoff → Message → Conversation` (ver `resetConversationsFor` em `conversation.spec.ts`) —
   qualquer novo teste que precisar limpar conversas deve seguir essa ordem.
+- **Sempre revalidar no browser depois de reconstruir a imagem Docker** — nesta fase, uma rota
+  (`/policy/actions`) foi adicionada DEPOIS de disparar um rebuild em background, e só apareceu como bug
+  (404) ao testar a UI de verdade no browser, não no `pnpm build` local (que só verifica compilação, não
+  se a imagem rodando tem o código mais recente). Não declarar uma fase de UI aprovada sem abrir o
+  browser e clicar em cada tela nova.
+- `apps/web/lib/api.ts` usa `NEXT_PUBLIC_API_URL` com fallback `http://localhost:3001` — esse fallback
+  funciona porque o browser roda no host, não dentro da rede do compose; não trocar para o hostname
+  interno do Docker (`ispagent-api`) por engano, o browser não resolveria isso.
+- Rotas HTTP completas documentadas em `docs/integrations.md` — qualquer endpoint novo na Fase 10
+  (ex.: para expor evidências de verify.ps1, se for o caso) deve ser adicionado lá também.
+- `AgentOrchestratorService` já é consumido via `WebchatController` (`apps/api/src/channels/`) usando
+  `runWithTenant(tenantId, ...)` manualmente, já que a rota é pública (sem JWT, sem tenant no token) — o
+  `:tenantId` vem da URL e é validado contra a tabela `Tenant` antes de qualquer coisa.

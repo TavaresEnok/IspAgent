@@ -30,6 +30,13 @@ fabricado se fosse chamado por engano.
 | `AnthropicProvider` | ESTRUTURADO, NÃO VALIDADO end-to-end — implementado contra a documentação oficial do SDK `@anthropic-ai/sdk`, lógica de prompt/parsing testável, mas nenhuma chave real disponível nesta sessão para chamar a API de verdade |
 | `OpenAIProvider` | INDISPONÍVEL — stub que lança erro explícito, não implementado (ver DECISIONS.md) |
 
+## Canais (seção 6.3)
+
+| Canal | Status |
+|---|---|
+| Web Chat | ✅ VALIDADO end-to-end — testado no browser real (não só curl): identidade resolvida por telefone, `BillingTool`/`SupportTool` executados a partir de mensagem digitada, chamado real criado, timeline visível no painel. `POST/GET /public/webchat/:tenantId/...` (Fase 9). |
+| WhatsApp Cloud API | NÃO VALIDADO end-to-end — sem credencial Meta (ver tabela de integrações acima) |
+
 ## Fonte da validação
 
 | Integração | Fonte consultada | Resultado |

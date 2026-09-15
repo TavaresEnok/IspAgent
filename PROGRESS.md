@@ -251,4 +251,55 @@ Console/UI de atendimento humano (telas) fica para a Fase 9 — esta fase entreg
 
 ---
 
-*(Fases 9–10 ainda não iniciadas nesta sessão — continuam conforme `STATE.md`.)*
+## Fase 9 — Canais e UI
+
+**Status:** ✅ APROVADO. Gate `pnpm build` verde (raiz: shared → api → web, 17 rotas Next.js compiladas) e
+**Web Chat testado de ponta a ponta no browser real** (não só via curl) — ver evidência abaixo.
+
+Entregue:
+
+**API REST** (não existia nenhum endpoint de domínio antes desta fase, só `/health` e `/auth/*`):
+`WebchatController` (`POST/GET /public/webchat/:tenantId/...`, público — canal obrigatório da seção 6.3),
+`ConversationsController`, `HandoffController`, `DashboardController` (métricas reais da seção 10.2,
+zero número estimado), `CustomersController`, `KnowledgeController`, `PolicyController` (+ `GET
+/policy/actions`, catálogo), `UsersController`, `AuditController`, `IntegrationsStatusController`.
+`docs/integrations.md` documenta a superfície completa.
+
+**Frontend (Next.js)** — todas as 14 telas da seção 10.1 entregues:
+Login · Dashboard (métricas reais) · Conversas (lista) · Detalhe da conversa (**timeline de tool calls e
+decisões de policy**, seção 10.1 explícita) · Fila humana (assumir/ver conversa) · Clientes · Knowledge
+Base (lista + criação) · Integrações (status honesto, mesma fonte da capability matrix) · Políticas
+(toggle ao vivo) · Ferramentas (catálogo de ações/tiers) · Usuários · Auditoria · Web Chat DEMO.
+("Config ERP"/"Config PulseISP" ficam representadas dentro da tela "Integrações" — não há formulário de
+credencial separado nesta sessão, já que nenhuma credencial real existe para configurar; "Config do
+agente" fica coberta por Políticas + Integrações, sem tela extra dedicada — ver limitações abaixo.)
+
+**Evidência de ponta a ponta testada no browser** (`http://localhost:3010`):
+1. Web Chat como `cus_demo_b` (fatura vencida): pergunta sobre fatura → `BillingTool` real → resposta
+   com fatos reais → pedido de abertura de chamado → `SupportTool` cria um `tkt_...` real.
+2. Login staff → Dashboard com métricas reais → Conversas → clique na conversa do Bruno → timeline
+   mostra os dois `BillingTool` + o `SupportTool` com facts, policy decisions e outcome corretos.
+3. Fila humana → "Assumir conversa" → item some da fila (confirmado via reload) → `AuditLog` registra
+   `handoff.assumed` com o `usr_admin_alpha` como ator (visível na tela Auditoria).
+4. Clientes, Knowledge Base, Integrações, Políticas, Ferramentas, Usuários, Auditoria — todas renderizam
+   dado real do backend, sem mock no frontend.
+
+Dois bugs reais encontrados e corrigidos durante o teste no browser:
+1. `/policy/actions` devolvia 404 — rota adicionada ao controller depois do rebuild da imagem Docker
+   anterior (corrigido com novo rebuild; lição: sempre revalidar no browser depois do build, não só
+   confiar no `pnpm build` local).
+2. Tela "Ferramentas" mostrava "sempre permitido no tier" também para ações `ADMIN` (que são sempre
+   **bloqueadas**) — texto corrigido para refletir a regra real.
+
+**Limitações documentadas honestamente** (não implementadas nesta fase — P1/nice-to-have, não P0):
+- Sem tela de formulário dedicada para credencial de IXC/SGP/PulseISP/WhatsApp (não há credencial real
+  para configurar nesta sessão; a tela "Integrações" já mostra o status honesto de cada uma).
+- Sem WebSocket/SSE para o Web Chat em tempo real (P1 "Web Chat em tempo real") — o chat funciona por
+  polling/request-response (envia mensagem, recebe resposta na mesma requisição), o que já é suficiente
+  para o fluxo de atendimento funcionar ponta a ponta, mas não atualiza a tela sozinho se outra aba/canal
+  mudar a conversa.
+- Sem paginação de UI nas listas (a API já pagina; o frontend sempre pede a primeira página grande).
+
+---
+
+*(Fase 10 ainda não iniciada nesta sessão — continua conforme `STATE.md`.)*

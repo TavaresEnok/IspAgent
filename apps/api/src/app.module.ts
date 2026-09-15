@@ -11,6 +11,13 @@ import { ToolsModule } from './tools/tools.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { AgentModule } from './agent/agent.module';
 import { HandoffModule } from './handoff/handoff.module';
+import { ChannelsModule } from './channels/channels.module';
+import { ConversationsModule } from './conversations/conversations.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { CustomersModule } from './customers/customers.module';
+import { AuditModule } from './audit/audit.module';
+import { UsersModule } from './users/users.module';
+import { IntegrationsStatusModule } from './integrations-status/integrations-status.module';
 
 @Module({
   imports: [
@@ -25,6 +32,13 @@ import { HandoffModule } from './handoff/handoff.module';
     KnowledgeModule,
     AgentModule,
     HandoffModule,
+    ChannelsModule,
+    ConversationsModule,
+    DashboardModule,
+    CustomersModule,
+    AuditModule,
+    UsersModule,
+    IntegrationsStatusModule,
   ],
   controllers: [HealthController],
 })
