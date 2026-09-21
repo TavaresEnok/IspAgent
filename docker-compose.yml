@@ -1,0 +1,108 @@
+name: ispagent
+
+services:
+  ispagent-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${ISPAGENT_DB_USER:-ispagent}
+      POSTGRES_PASSWORD: ${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}
+      POSTGRES_DB: ${ISPAGENT_DB_NAME:-ispagent}
+    ports:
+      - '${ISPAGENT_DB_PORT:-5433}:5432'
+    volumes:
+      - ispagent-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${ISPAGENT_DB_USER:-ispagent} -d ${ISPAGENT_DB_NAME:-ispagent}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ispagent-redis:
+    image: redis:7-alpine
+    ports:
+      - '${ISPAGENT_REDIS_PORT:-6380}:6379'
+    volumes:
+      - ispagent-redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ispagent-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - .env
+    environment:
+      ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
+      ISPAGENT_REDIS_URL: redis://ispagent-redis:6379
+      ISPAGENT_API_PORT_INTERNAL: '3001'
+    ports:
+      - '${ISPAGENT_API_PORT:-3001}:3001'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      ispagent-db:
+        condition: service_healthy
+      ispagent-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+
+  ispagent-worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ['node', 'dist/worker.main.js']
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    env_file:
+      - .env
+    environment:
+      ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
+      ISPAGENT_REDIS_URL: redis://ispagent-redis:6379
+      ISPAGENT_WORKER_HEALTH_PORT: '3002'
+    depends_on:
+      ispagent-db:
+        condition: service_healthy
+      ispagent-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://localhost:3002/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  ispagent-web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      ISPAGENT_WEB_API_URL: http://localhost:${ISPAGENT_API_PORT:-3001}
+      PORT: '3000'
+      # O server.js gerado pelo "standalone" do Next usa HOSTNAME para bind; sem isso, herda o HOSTNAME
+      # que o Docker seta automaticamente (o ID do container) e escuta só nesse endereço, não em
+      # 0.0.0.0 — o healthcheck (e qualquer acesso externo) falha com ECONNREFUSED.
+      HOSTNAME: '0.0.0.0'
+    ports:
+      - '${ISPAGENT_WEB_PORT:-3000}:3000'
+    depends_on:
+      ispagent-api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://localhost:3000/api/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+
+volumes:
+  ispagent-db-data:
+  ispagent-redis-data:

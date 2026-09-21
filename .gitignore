@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+.next/
+*.tsbuildinfo
+.env
+.env.local
+!.env.example
+artifacts/verification/latest.log
+artifacts/verification/summary.json
+artifacts/verification/evidence/*
+!artifacts/verification/evidence/.gitkeep
+coverage/
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.vscode/
+.idea/
+generated/
+.claude/
+
+# e2e
+test-results/
+playwright-report/

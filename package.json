@@ -1,0 +1,22 @@
+{
+  "name": "ispagent",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm --filter @ispagent/shared build && pnpm --filter @ispagent/api build && pnpm --filter @ispagent/web build",
+    "dev:api": "pnpm --filter @ispagent/api dev",
+    "dev:web": "pnpm --filter @ispagent/web dev",
+    "db:migrate": "pnpm --filter @ispagent/api prisma:migrate:deploy",
+    "db:seed": "pnpm --filter @ispagent/api db:seed",
+    "test": "pnpm --filter @ispagent/api test",
+    "test:shared": "pnpm --filter @ispagent/shared test",
+    "test:e2e": "pnpm --filter @ispagent/e2e test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}
