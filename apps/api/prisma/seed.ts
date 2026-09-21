@@ -37,6 +37,10 @@ async function upsertUser(params: {
 }
 
 async function main() {
+  // O seed cria contas DEMO com senha conhecida (Demo!2026): jamais em produção.
+  if (process.env.ISPAGENT_ENV === 'production') {
+    throw new Error('[seed] recusado: o seed DEMO cria usuários com senha conhecida e não roda com ISPAGENT_ENV=production.');
+  }
   console.log('[seed] iniciando seed determinístico...');
 
   const alpha = await upsertTenant('tnt_demo_alpha', 'Provedor Alpha');

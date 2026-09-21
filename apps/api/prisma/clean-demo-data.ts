@@ -7,14 +7,24 @@
  */
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'node:crypto';
 
 const prisma = new PrismaClient();
 
 const PRESERVED_TENANT_ID = 'tnt_vibe';
 const ADMIN_EMAIL = 'admin@vibe.ispagent.local';
-const ADMIN_PASSWORD = process.env.ISPAGENT_VIBE_ADMIN_PASSWORD || 'Vibe!2026';
+const CONFIRMATION = 'APAGAR-DADOS-DEMO';
 
 async function main() {
+  // Este script apaga TODOS os clientes, conversas, faturas, chamados e auditoria de TODOS os tenants
+  // (inclusive do tnt_vibe). Não roda por acidente.
+  if (process.env.ISPAGENT_CLEAN_CONFIRM !== CONFIRMATION) {
+    console.error(
+      `Recusado: isto apaga clientes, conversas e auditoria de todos os tenants.\n` +
+        `Se é isso mesmo que você quer, rode com ISPAGENT_CLEAN_CONFIRM=${CONFIRMATION}`,
+    );
+    process.exit(2);
+  }
   console.log('--- INICIANDO LIMPEZA DE DADOS DEMO NO ISPAGENT ---');
 
   // 1. Garantir que o tenant Vibe existe antes de deletar os outros
@@ -30,20 +40,30 @@ async function main() {
     create: { tenantId: PRESERVED_TENANT_ID },
   });
 
-  // 2. Garantir usuário admin para tnt_vibe
-  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
-  await prisma.user.upsert({
+  // 2. Garantir usuário admin para tnt_vibe. Nunca há senha fixa no código: se o admin já existe a senha
+  // é mantida (a menos que ISPAGENT_VIBE_ADMIN_PASSWORD seja informada); se não existe, usa a variável ou
+  // gera uma aleatória, impressa uma única vez.
+  const existingAdmin = await prisma.user.findUnique({
     where: { tenantId_email: { tenantId: PRESERVED_TENANT_ID, email: ADMIN_EMAIL } },
-    update: { passwordHash, active: true, name: 'Admin Vibe Telecom' },
-    create: {
-      tenantId: PRESERVED_TENANT_ID,
-      email: ADMIN_EMAIL,
-      passwordHash,
-      role: 'TENANT_ADMIN',
-      name: 'Admin Vibe Telecom',
-      active: true,
-    },
   });
+  const fromEnv = process.env.ISPAGENT_VIBE_ADMIN_PASSWORD;
+  if (!existingAdmin || fromEnv) {
+    const password = fromEnv ?? randomBytes(12).toString('base64url');
+    const passwordHash = await bcrypt.hash(password, 10);
+    await prisma.user.upsert({
+      where: { tenantId_email: { tenantId: PRESERVED_TENANT_ID, email: ADMIN_EMAIL } },
+      update: { passwordHash, active: true, name: 'Admin Vibe Telecom' },
+      create: {
+        tenantId: PRESERVED_TENANT_ID,
+        email: ADMIN_EMAIL,
+        passwordHash,
+        role: 'TENANT_ADMIN',
+        name: 'Admin Vibe Telecom',
+        active: true,
+      },
+    });
+    if (!fromEnv) console.log(`[OK] Senha gerada para ${ADMIN_EMAIL} (só aparece agora): ${password}`);
+  }
 
   console.log(`[OK] Tenant ${PRESERVED_TENANT_ID} e admin ${ADMIN_EMAIL} garantidos.`);
 
@@ -143,9 +163,7 @@ async function main() {
   console.log(`Total Clientes: ${customerCount}, Total Contratos: ${contractCount}, Total Conversas: ${conversationCount}`);
 
   console.log('\n--- LIMPEZA CONCLUÍDA COM SUCESSO! ---');
-  console.log(`Acesse o painel com:`);
-  console.log(`Email: ${ADMIN_EMAIL}`);
-  console.log(`Senha: ${ADMIN_PASSWORD}`);
+  console.log(`Acesse o painel com o e-mail ${ADMIN_EMAIL} (a senha não é exibida aqui).`);
 }
 
 main()

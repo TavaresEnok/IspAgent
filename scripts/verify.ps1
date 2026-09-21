@@ -15,6 +15,15 @@ param(
   [switch]$Fresh
 )
 
+# ---- trava de segurança ----
+# Este script SEMEIA contas DEMO com senha conhecida (Demo!2026) no banco do compose e, com -Fresh, APAGA
+# os volumes (banco inclusive). Nunca rode contra dados reais sem querer.
+if ($env:ISPAGENT_VERIFY_ALLOW_DESTROY -ne '1') {
+  Write-Host 'verify.ps1 recusado: ele cria contas DEMO no banco do compose e, com -Fresh, apaga os volumes (dados).' -ForegroundColor Red
+  Write-Host 'Se este ambiente é descartável, rode:  $env:ISPAGENT_VERIFY_ALLOW_DESTROY=1; .\scripts\verify.ps1 [-Fresh]' -ForegroundColor Yellow
+  exit 2
+}
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root

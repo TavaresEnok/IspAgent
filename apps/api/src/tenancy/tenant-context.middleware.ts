@@ -38,7 +38,7 @@ export class TenantContextMiddleware implements NestMiddleware {
     }
 
     try {
-      const payload = this.jwt.verify(token, { secret: process.env.ISPAGENT_JWT_SECRET });
+      const payload = this.jwt.verify(token, { secret: process.env.ISPAGENT_JWT_SECRET, algorithms: ['HS256'] });
       req.user = {
         userId: payload.sub,
         tenantId: payload.tenantId,

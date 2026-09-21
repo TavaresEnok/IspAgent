@@ -4,10 +4,15 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiLogin, setSession, ApiError } from '@/lib/api';
 
+// Credenciais de demonstração só aparecem (e só pré-preenchem) num build marcado como DEMO.
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@alpha.ispagent.local');
-  const [password, setPassword] = useState('Demo!2026');
+  const [email, setEmail] = useState(DEMO_MODE ? 'admin@alpha.ispagent.local' : '');
+  const [password, setPassword] = useState(DEMO_MODE ? 'Demo!2026' : '');
+  const [tenantId, setTenantId] = useState('');
+  const [needsTenant, setNeedsTenant] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -16,11 +21,16 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const { accessToken, refreshToken } = await apiLogin(email, password);
+      const { accessToken, refreshToken } = await apiLogin(email, password, needsTenant ? tenantId.trim() : undefined);
       setSession(accessToken, refreshToken);
       router.push('/dashboard');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Falha ao conectar com a API');
+      if (err instanceof ApiError && err.code === 'TENANT_REQUIRED') {
+        setNeedsTenant(true);
+        setError(err.message);
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Falha ao conectar com a API');
+      }
     } finally {
       setLoading(false);
     }
@@ -40,6 +50,7 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoComplete="username"
               className="rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
             />
           </label>
@@ -50,9 +61,22 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete="current-password"
               className="rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
             />
           </label>
+          {needsTenant && (
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium text-slate-700">Provedor (tenant)</span>
+              <input
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                required
+                placeholder="ex.: tnt_vibe"
+                className="rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+              />
+            </label>
+          )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -65,11 +89,13 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-          <p className="mb-1 font-medium">Credenciais DEMO</p>
-          <p>admin@alpha.ispagent.local / Demo!2026 (TENANT_ADMIN)</p>
-          <p>operador@alpha.ispagent.local / Demo!2026 (AGENT)</p>
-        </div>
+        {DEMO_MODE && (
+          <div className="mt-6 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+            <p className="mb-1 font-medium">Credenciais DEMO</p>
+            <p>admin@alpha.ispagent.local / Demo!2026 (TENANT_ADMIN)</p>
+            <p>operador@alpha.ispagent.local / Demo!2026 (AGENT)</p>
+          </div>
+        )}
 
         <a href="/webchat" className="mt-4 block text-center text-xs text-slate-400 hover:text-slate-600">
           Ir para o Web Chat do cliente →

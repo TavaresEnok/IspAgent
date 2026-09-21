@@ -2,12 +2,11 @@
 
 ## Status nesta sessão
 
-`ISPAGENT_ANTHROPIC_API_KEY` está vazia neste ambiente → o sistema roda inteiro com `MockAIProvider`
-(`RunMode` = `DEMO`), como a seção 6.4 exige. `AnthropicProvider` está implementado e testável quanto à
-lógica de parsing/prompt (ver `apps/api/src/integrations/ai/anthropic.provider.ts`), mas **não foi
-exercitado contra a API real da Anthropic nesta sessão** — não há como validar isso sem uma chave. Se uma
-chave for configurada depois, `AiProviderModule` passa a selecioná-lo automaticamente, sem mudar nenhuma
-regra de negócio (a interface `AIProvider` é a mesma).
+O provider de IA é escolhido **por tenant** na tela "IA" do painel (a chave fica no banco, cifrada — ver
+`docs/security.md`), não por variável de ambiente. Sem chave salva, o tenant roda com `MockAIProvider`
+(`RunMode` = `DEMO`), como a seção 6.4 exige. `AnthropicProvider` e `GeminiProvider` têm timeout e
+parsing tolerante a ```` ```json ```` e são cobertos por testes com cliente simulado
+(`apps/api/test/ai-safety.spec.ts`); a validação ponta a ponta contra a API real depende de uma chave.
 
 `OpenAIProvider` é um stub estruturado (lança erro explícito se chamado) — não implementado nesta sessão,
 ver `DECISIONS.md`.
@@ -17,21 +16,29 @@ ver `DECISIONS.md`.
 O `AgentOrchestratorService` nunca manda a "extração de dados" completa de um cliente para o
 `AIProvider`. Ele manda:
 
-- A mensagem do cliente (texto livre, já é o que o cliente digitou).
+- A mensagem do cliente e as últimas falas da conversa (texto livre) — **com dados pessoais mascarados**
+  antes de sair: CPF, CNPJ, e-mail, telefone e sequências longas de dígitos viram `[CPF]`, `[CNPJ]`,
+  `[EMAIL]`, `[TELEFONE]`, `[NÚMERO]` (`apps/api/src/integrations/ai/pii-mask.ts`, aplicado dentro dos
+  providers, também na classificação de intenção).
 - A intenção classificada e o `toolStatus`.
+- Só o **primeiro nome** do cliente identificado (para cumprimentar).
 - Uma lista curta de **fatos já resolvidos** (`label` + `value`) vindos de `ToolResult.facts` — nunca o
   objeto de dados inteiro do ERP, nunca a fatura inteira, nunca o CPF do cliente. Exemplo real do que é
   enviado: `{label: "Fatura em atraso", value: true}`, não o array de faturas completo com valores,
   datas, código de barras etc.
+- O nome do provedor (tenant) e o teto de tokens da policy.
 
-O prompt do `AnthropicProvider` (ver `composeReply` em `anthropic.provider.ts`) instrui explicitamente o
-modelo a usar **apenas** os fatos fornecidos e a admitir quando não há informação suficiente — mas a
-garantia estrutural real, que não depende de o modelo "obedecer" à instrução, é o invariante de
-`Claim`/`evidence` da seção 3.4 (`apps/api/src/agent/claim-validator.service.ts` — ver também
-`docs/agent-runtime.md`): toda afirmação de fato (`Claim.type === 'FACT'`) do `AgentDecision` é
-construída pelo próprio orquestrador diretamente a partir de `ToolResult.facts`, não a partir de texto
-livre gerado pelo modelo. O modelo só fraseia a resposta ao cliente; ele não decide o que conta como
-fato.
+O prompt instrui o modelo a usar **apenas** os fatos fornecidos. Mas instrução não é garantia — as
+garantias que **não** dependem de o modelo obedecer são duas, e ambas são código:
+
+1. **Fatos com procedência** (`ClaimValidator`, seção 3.4): toda `Claim` `FACT` do `AgentDecision` é
+   construída pelo orquestrador a partir de `ToolResult.facts`, nunca do texto do modelo. Isto prova que
+   os *fatos* têm origem — não prova o *texto* enviado ao cliente.
+2. **Conferência da resposta** (`agent/reply-guard.ts`): antes de enviar, todo valor numérico, data ou
+   moeda da resposta do LLM precisa existir nos fatos (ou na fala do próprio cliente), e a resposta não
+   pode dizer que abriu chamado/agendou visita se nenhuma ferramenta fez isso. Se falhar, o texto do
+   modelo é descartado e sai a resposta determinística (regras). Só se aplica a providers `LIVE`; o Mock
+   já é determinístico.
 
 ## Prompts versionados
 
@@ -41,11 +48,15 @@ do sistema (seja no `MockAIProvider`, seja no `AnthropicProvider`) devem increme
 
 ## Minimização e mascaramento
 
-- CPF/CNPJ (`Customer.document`) nunca é enviado ao `AIProvider`.
+- CPF/CNPJ (`Customer.document`) nunca é enviado ao `AIProvider`, e o que o cliente digita é mascarado
+  antes de sair (ver acima). Na tela de staff o CPF só aparece completo para `SUPERVISOR`+.
 - Nenhum dado de outro cliente é acessível: o isolamento de tenant (ver `docs/architecture.md`) já
   impede isso na camada de dados, antes mesmo de chegar ao agente.
-- Identidade não verificada (`AMBIGUOUS`/`NOT_FOUND`) nunca expõe dado de conta nenhuma — o orquestrador
-  não chama `BillingTool`/`PlanTool`/`SupportTool` sem `customerId`/`contractId` confirmados (P0.7).
+- Identidade não verificada nunca expõe dado de conta: o orquestrador só chama
+  `BillingTool`/`PlanTool`/`SupportTool` com `customerId`/`contractId` confirmados (P0.7) — e a
+  confirmação só vem do telefone de um canal verificado (ou de demonstração) ou de um CPF/CNPJ completo,
+  exato e único, com no máximo `MEDIUM` de confiança e bloqueio por tentativas (ver `docs/security.md`).
+  Nunca por nome ou trecho de texto.
 
 ## Registro de custo/uso
 

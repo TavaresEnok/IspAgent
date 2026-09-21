@@ -1,5 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { HandoffSummary } from '@ispagent/shared';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { HandoffSummary, ROLE_HIERARCHY, Role } from '@ispagent/shared';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { currentTenantId } from '../common/tenant-context';
 
@@ -7,6 +7,10 @@ import { currentTenantId } from '../common/tenant-context';
  * Fila humana e transições AI → HUMAN → AI (seção 5.4). Quando o humano assume, a IA para de responder
  * naquela conversa — isso é aplicado em `AgentOrchestratorService.handleMessage` checando
  * `conversation.status`, não aqui; este serviço só é dono das transições de estado em si.
+ *
+ * Transições válidas: PENDING → ASSUMED → RETURNED_TO_AI. Cada uma é uma escrita condicional (só vale se
+ * o handoff ainda está no estado de origem) dentro de uma transação, então dois atendentes clicando ao
+ * mesmo tempo não assumem a mesma conversa e nunca sobra handoff/conversa em estados incoerentes.
  */
 @Injectable()
 export class HandoffService {
@@ -30,33 +34,35 @@ export class HandoffService {
     });
     if (existing) return existing;
 
-    const handoff = await this.db.client.handoff.create({
-      data: {
-        tenantId,
-        conversationId,
-        reason,
-        summary: summary as unknown as object,
-        status: 'PENDING',
-      },
-    });
+    return this.db.client.$transaction(async (tx) => {
+      const handoff = await tx.handoff.create({
+        data: {
+          tenantId,
+          conversationId,
+          reason,
+          summary: summary as unknown as object,
+          status: 'PENDING',
+        },
+      });
 
-    await this.db.client.conversation.update({
-      where: { id: conversationId },
-      data: { status: 'HANDOFF_PENDING' },
-    });
+      await tx.conversation.update({
+        where: { id: conversationId },
+        data: { status: 'HANDOFF_PENDING' },
+      });
 
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        actorType: 'SYSTEM',
-        action: 'handoff.created',
-        entityType: 'Handoff',
-        entityId: handoff.id,
-        metadata: { conversationId, reason },
-      },
-    });
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          actorType: 'SYSTEM',
+          action: 'handoff.created',
+          entityType: 'Handoff',
+          entityId: handoff.id,
+          metadata: { conversationId, reason },
+        },
+      });
 
-    return handoff;
+      return handoff;
+    });
   }
 
   async listQueue(status: 'PENDING' | 'ASSUMED' | 'RETURNED_TO_AI' | 'CLOSED' = 'PENDING') {
@@ -71,60 +77,80 @@ export class HandoffService {
     const tenantId = this.requireTenantId();
     const handoff = await this.db.client.handoff.findUnique({ where: { id: handoffId } });
     if (!handoff) throw new NotFoundException('Handoff não encontrado');
+    if (handoff.status !== 'PENDING') {
+      throw new ConflictException(`Este handoff já está "${handoff.status}" e não pode ser assumido.`);
+    }
 
-    const updated = await this.db.client.handoff.update({
-      where: { id: handoffId },
-      data: { status: 'ASSUMED', assumedByUserId: userId, assumedAt: new Date() },
+    await this.db.client.$transaction(async (tx) => {
+      const claimed = await tx.handoff.updateMany({
+        where: { id: handoffId, status: 'PENDING' },
+        data: { status: 'ASSUMED', assumedByUserId: userId, assumedAt: new Date() },
+      });
+      if (claimed.count === 0) throw new ConflictException('Outro atendente assumiu este handoff antes.');
+
+      await tx.conversation.update({
+        where: { id: handoff.conversationId },
+        data: { status: 'HUMAN_ACTIVE' },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          actorType: 'USER',
+          actorId: userId,
+          action: 'handoff.assumed',
+          entityType: 'Handoff',
+          entityId: handoffId,
+          metadata: { conversationId: handoff.conversationId },
+        },
+      });
     });
 
-    await this.db.client.conversation.update({
-      where: { id: handoff.conversationId },
-      data: { status: 'HUMAN_ACTIVE' },
-    });
-
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        actorType: 'USER',
-        actorId: userId,
-        action: 'handoff.assumed',
-        entityType: 'Handoff',
-        entityId: handoffId,
-        metadata: { conversationId: handoff.conversationId },
-      },
-    });
-
-    return updated;
+    return this.db.client.handoff.findUniqueOrThrow({ where: { id: handoffId } });
   }
 
-  /** Devolve a conversa para a IA (AI → HUMAN → AI, seção 5.4) — auditado como as outras transições. */
-  async returnToAI(handoffId: string, userId: string) {
+  /**
+   * Devolve a conversa para a IA (AI → HUMAN → AI, seção 5.4) — auditado como as outras transições.
+   * Só quem assumiu (ou um SUPERVISOR+) pode devolver.
+   */
+  async returnToAI(handoffId: string, userId: string, role?: string) {
     const tenantId = this.requireTenantId();
     const handoff = await this.db.client.handoff.findUnique({ where: { id: handoffId } });
     if (!handoff) throw new NotFoundException('Handoff não encontrado');
+    if (handoff.status !== 'ASSUMED') {
+      throw new ConflictException(`Só é possível devolver um handoff assumido (estado atual: "${handoff.status}").`);
+    }
+    const isOwner = handoff.assumedByUserId === userId;
+    const isSupervisor = role !== undefined && ROLE_HIERARCHY[role as Role] >= ROLE_HIERARCHY.SUPERVISOR;
+    if (!isOwner && !isSupervisor) {
+      throw new ForbiddenException('Só quem assumiu a conversa (ou um supervisor) pode devolvê-la à IA.');
+    }
 
-    const updated = await this.db.client.handoff.update({
-      where: { id: handoffId },
-      data: { status: 'RETURNED_TO_AI', returnedAt: new Date() },
+    await this.db.client.$transaction(async (tx) => {
+      const released = await tx.handoff.updateMany({
+        where: { id: handoffId, status: 'ASSUMED' },
+        data: { status: 'RETURNED_TO_AI', returnedAt: new Date() },
+      });
+      if (released.count === 0) throw new ConflictException('O handoff mudou de estado durante a operação.');
+
+      await tx.conversation.update({
+        where: { id: handoff.conversationId },
+        data: { status: 'AI_ACTIVE' },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          actorType: 'USER',
+          actorId: userId,
+          action: 'handoff.returned_to_ai',
+          entityType: 'Handoff',
+          entityId: handoffId,
+          metadata: { conversationId: handoff.conversationId },
+        },
+      });
     });
 
-    await this.db.client.conversation.update({
-      where: { id: handoff.conversationId },
-      data: { status: 'AI_ACTIVE' },
-    });
-
-    await this.db.client.auditLog.create({
-      data: {
-        tenantId,
-        actorType: 'USER',
-        actorId: userId,
-        action: 'handoff.returned_to_ai',
-        entityType: 'Handoff',
-        entityId: handoffId,
-        metadata: { conversationId: handoff.conversationId },
-      },
-    });
-
-    return updated;
+    return this.db.client.handoff.findUniqueOrThrow({ where: { id: handoffId } });
   }
 }

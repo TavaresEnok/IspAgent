@@ -85,7 +85,7 @@ describe('AgentOrchestratorService', () => {
     expect(messages[1].content.length).toBeGreaterThan(0);
   });
 
-  it('telefone ambíguo (cus_demo_g/g2) nunca chama BillingTool e vira HANDOFF (P0.7)', async () => {
+  it('telefone ambíguo (cus_demo_g/g2) nunca chama ferramenta de conta: pede o CPF em vez de adivinhar (P0.7)', async () => {
     const decision = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
@@ -94,16 +94,37 @@ describe('AgentOrchestratorService', () => {
     });
 
     expect(decision.identity).toBeNull();
-    expect(decision.outcome).toBe('HANDOFF');
-    expect(decision.toolCalls).toHaveLength(1);
-
-    const call = await runWithTenant('tnt_demo_alpha', () =>
-      db.client.toolCall.findUnique({ where: { id: decision.toolCalls[0] } }),
-    );
-    expect(call?.tool).not.toBe('BillingTool'); // sem conta confirmada, nenhuma ferramenta de conta roda
+    expect(decision.outcome).toBe('ANSWERED');
+    expect(decision.toolCalls).toHaveLength(0); // sem conta confirmada, nenhuma ferramenta roda
   });
 
-  it('telefone não cadastrado usa KnowledgeTool para dúvida técnica, sem tentar identidade', async () => {
+  it('telefone ambíguo + CPF de um dos candidatos identifica exatamente esse cliente (cus_demo_g), nunca o outro', async () => {
+    const decision = await runWithTenant('tnt_demo_alpha', async () => {
+      const conv = await db.client.conversation.create({
+        data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
+      });
+      await ask(conv.id, 'quero saber da minha fatura');
+      return ask(conv.id, 'meu cpf é 111.111.111-07');
+    });
+
+    expect(decision.identity?.customerId).toBe('cus_demo_g');
+    expect(decision.identity?.method).toBe('DOCUMENT');
+  });
+
+  it('telefone ambíguo + CPF de um cliente que NÃO é candidato nunca vincula (P0.7)', async () => {
+    const decision = await runWithTenant('tnt_demo_alpha', async () => {
+      const conv = await db.client.conversation.create({
+        data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
+      });
+      await ask(conv.id, 'quero saber da minha fatura');
+      return ask(conv.id, 'meu cpf é 111.111.111-01'); // cus_demo_a: existe, mas não compartilha este telefone
+    });
+
+    expect(decision.identity).toBeNull();
+    expect(decision.toolCalls).toHaveLength(0);
+  });
+
+  it('telefone não cadastrado com dúvida de conexão pede o CPF: não vincula ninguém nem consulta rede', async () => {
     const decision = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: freshPhone(), status: 'AI_ACTIVE' },
@@ -113,10 +134,8 @@ describe('AgentOrchestratorService', () => {
 
     expect(decision.identity).toBeNull();
     expect(decision.intent).toBe('INTERNET_LENTA');
-    const call = await runWithTenant('tnt_demo_alpha', () =>
-      db.client.toolCall.findUnique({ where: { id: decision.toolCalls[0] } }),
-    );
-    expect(call?.tool).toBe('KnowledgeTool');
+    expect(decision.outcome).toBe('ANSWERED');
+    expect(decision.toolCalls).toHaveLength(0);
   });
 
   it('consulta de chamado existente (cus_demo_f) executa SupportTool e responde', async () => {

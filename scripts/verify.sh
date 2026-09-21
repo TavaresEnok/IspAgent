@@ -2,14 +2,23 @@
 # ISPAgent — verify.sh (seção 12 do prompt de execução)
 # Equivalente Unix de verify.ps1. Mesmos 18 passos, mesmas evidências. Requer: docker, pnpm, curl, jq.
 #
-# Uso:
-#   ./scripts/verify.sh          # reaproveita containers/dados existentes
-#   ./scripts/verify.sh --fresh  # derruba containers e volumes, reconstrói do zero
+# Uso (ambiente DESCARTÁVEL — exige ISPAGENT_VERIFY_ALLOW_DESTROY=1, ver trava abaixo):
+#   ISPAGENT_VERIFY_ALLOW_DESTROY=1 ./scripts/verify.sh          # reaproveita containers/dados existentes
+#   ISPAGENT_VERIFY_ALLOW_DESTROY=1 ./scripts/verify.sh --fresh  # derruba containers e volumes, reconstrói do zero
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+# ---- trava de segurança ----
+# Este script SEMEIA contas DEMO com senha conhecida (Demo!2026) no banco de ISPAGENT_DATABASE_URL e, com
+# --fresh, APAGA os volumes do compose (banco inclusive). Nunca rode contra dados reais sem querer.
+if [[ "${ISPAGENT_VERIFY_ALLOW_DESTROY:-}" != "1" ]]; then
+  echo "verify.sh recusado: ele cria contas DEMO no banco do compose e, com --fresh, apaga os volumes (dados)." >&2
+  echo "Se este ambiente é descartável, rode:  ISPAGENT_VERIFY_ALLOW_DESTROY=1 ./scripts/verify.sh [--fresh]" >&2
+  exit 2
+fi
 
 FRESH=false
 if [[ "${1:-}" == "--fresh" || "${1:-}" == "-Fresh" ]]; then

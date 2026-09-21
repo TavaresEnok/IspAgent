@@ -1,21 +1,26 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { IsString, MinLength } from 'class-validator';
+import { IsString, MaxLength, MinLength } from 'class-validator';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { ConversationService } from '../conversation/conversation.service';
+import { Roles } from '../common/decorators/roles.decorator';
+import { maskDocument } from '../common/mask-document';
 
 class SendHumanMessageDto {
   @IsString()
   @MinLength(1)
+  @MaxLength(4000)
   content!: string;
 }
 
 /**
  * Endpoints de staff (JWT obrigatório — guard global, ver AuthModule). Lista/detalhe de conversa
  * alimentam as telas "Conversas" e "Detalhe da conversa" (seção 10.1), incluindo a timeline de tool
- * calls e decisões de policy que o detalhe exige.
+ * calls e decisões de policy que o detalhe exige. Leitura exige ANALYST+ (há dado pessoal do cliente);
+ * responder ao cliente exige AGENT+.
  */
 @Controller('conversations')
+@Roles('ANALYST')
 export class ConversationsController {
   constructor(
     private readonly db: TenantPrismaService,
@@ -41,7 +46,7 @@ export class ConversationsController {
   }
 
   @Get(':id')
-  async detail(@Param('id') id: string) {
+  async detail(@Param('id') id: string, @Req() req: Request) {
     const conversation = await this.db.client.conversation.findUnique({
       where: { id },
       include: {
@@ -55,6 +60,9 @@ export class ConversationsController {
       },
     });
     if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    if (conversation.customer) {
+      conversation.customer.document = maskDocument(conversation.customer.document, req.user?.role);
+    }
     return conversation;
   }
 
@@ -65,6 +73,7 @@ export class ConversationsController {
    * como humano" enquanto a IA ainda está no comando, isso seria os dois falando ao mesmo tempo.
    */
   @Post(':id/messages')
+  @Roles('AGENT')
   async sendHumanMessage(@Param('id') id: string, @Body() dto: SendHumanMessageDto, @Req() req: Request) {
     const conv = await this.db.client.conversation.findUnique({ where: { id } });
     if (!conv) throw new NotFoundException('Conversa não encontrada');

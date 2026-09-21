@@ -56,12 +56,16 @@ describe('Handoff', () => {
     return orchestrator.handleMessage(conversationId, message);
   }
 
-  it('P0.5 — identidade ambígua vira HANDOFF real: fila recebe resumo estruturado', async () => {
+  it('P0.5 — identidade que não se confirma vira HANDOFF real: fila recebe resumo estruturado', async () => {
     const { conversationId, decision } = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
       });
-      const decision = await ask(conv.id, 'quero ver minha fatura, por favor');
+      // Telefone ambíguo: o agente pede o CPF; tentativas erradas esgotam o limite da policy (3) → humano.
+      await ask(conv.id, 'quero ver minha fatura, por favor');
+      await ask(conv.id, 'meu cpf é 000.000.000-01');
+      await ask(conv.id, 'meu cpf é 000.000.000-02');
+      const decision = await ask(conv.id, 'quero ver minha fatura, meu cpf é 000.000.000-03');
       return { conversationId: conv.id, decision };
     });
 

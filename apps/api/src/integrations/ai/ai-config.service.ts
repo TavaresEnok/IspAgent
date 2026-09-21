@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../../prisma/tenant-prisma.service';
+import { encryptSecret, isEncrypted, tryDecryptSecret } from '../../common/secret-cipher';
 
 export type AiProviderName = 'mock' | 'anthropic' | 'gemini' | 'openai';
 
@@ -68,6 +69,8 @@ function assertKnownProvider(provider: string): AiProviderName {
  */
 @Injectable()
 export class AiConfigService {
+  private readonly logger = new Logger(AiConfigService.name);
+
   constructor(private readonly db: TenantPrismaService) {}
 
   private async activeName(tenantId: string): Promise<AiProviderName> {
@@ -80,7 +83,9 @@ export class AiConfigService {
   async getOverview(tenantId: string): Promise<AiConfigOverview> {
     const [active, credentials] = await Promise.all([
       this.activeName(tenantId),
-      this.db.client.aiProviderCredential.findMany({ where: { tenantId } }),
+      Promise.all(AI_PROVIDER_CATALOG.map((p) => this.getCredential(tenantId, p.value))).then((rows) =>
+        rows.filter((r): r is NonNullable<typeof r> => r !== null),
+      ),
     ]);
 
     const providers: AiProviderCardView[] = AI_PROVIDER_CATALOG.map((p) => {
@@ -111,8 +116,25 @@ export class AiConfigService {
     return { provider, credential };
   }
 
+  /**
+   * Devolve a credencial com `apiKey` já decifrada (só existe em memória, nunca sai do backend). Chave
+   * legada em texto puro é regravada cifrada no primeiro acesso; chave que não abre (ENCRYPTION_KEY
+   * trocada) vira `null` — o provider cai no Mock em vez de quebrar o turno.
+   */
   async getCredential(tenantId: string, provider: AiProviderName) {
-    return this.db.client.aiProviderCredential.findFirst({ where: { tenantId, provider } });
+    const row = await this.db.client.aiProviderCredential.findFirst({ where: { tenantId, provider } });
+    if (!row || !row.apiKey) return row;
+
+    if (!isEncrypted(row.apiKey)) {
+      await this.db.client.aiProviderCredential
+        .update({ where: { tenantId_provider: { tenantId, provider } }, data: { apiKey: encryptSecret(row.apiKey) } })
+        .catch((err) => this.logger.warn(`Não consegui cifrar a credencial legada de ${provider}: ${err}`));
+      return row;
+    }
+
+    const apiKey = tryDecryptSecret(row.apiKey);
+    if (!apiKey) this.logger.error(`Credencial de ${provider} (tenant ${tenantId}) não pôde ser decifrada — regrave a chave.`);
+    return { ...row, apiKey };
   }
 
   /**
@@ -134,10 +156,11 @@ export class AiConfigService {
     const apiKey = input.clearApiKey ? null : typedKey ? typedKey : (existing?.apiKey ?? null);
     const model = input.model?.trim() || null;
 
+    const storedKey = apiKey ? encryptSecret(apiKey) : null;
     await this.db.client.aiProviderCredential.upsert({
       where: { tenantId_provider: { tenantId, provider } },
-      create: { tenantId, provider, apiKey, model },
-      update: { apiKey, model },
+      create: { tenantId, provider, apiKey: storedKey, model },
+      update: { apiKey: storedKey, model },
     });
 
     return this.getOverview(tenantId);

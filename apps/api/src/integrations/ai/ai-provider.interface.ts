@@ -26,6 +26,10 @@ export interface ComposeReplyInput {
   justIdentified?: boolean;
   /** Se um termo/CPF foi digitado mas não foi encontrado no cadastro. */
   cpfNotFound?: string | null;
+  /** Nome do provedor (tenant) que o agente representa — usado no prompt em vez de um nome fixo. */
+  providerName?: string | null;
+  /** Teto de tokens da resposta, vindo de `maxTokensPerTurn` da policy do tenant. */
+  maxOutputTokens?: number;
 }
 
 /**

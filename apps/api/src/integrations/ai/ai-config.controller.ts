@@ -35,7 +35,9 @@ export class AiConfigController {
     private readonly resolver: AiProviderResolverService,
   ) {}
 
+  // Mostra provider/modelo/chave mascarada: só administradores (a tela "IA" é de administração).
   @Get()
+  @Roles('TENANT_ADMIN', 'SUPER_ADMIN')
   overview() {
     return this.config.getOverview(currentTenantId() as string);
   }

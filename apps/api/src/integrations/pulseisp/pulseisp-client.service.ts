@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PulseAnomalyDetail, PulseCustomer360 } from './pulseisp-mapper';
 import { PulseIspConnectionService } from './pulseisp-connection.service';
+import { UnsafeOutboundUrlError, assertSafeOutboundUrl } from '../../common/outbound-url';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 // O JWT de acesso do PulseISP dura 15 min por padrão (PULSEISP_JWT_ACCESS_TTL_SECONDS=900) — renova antes.
@@ -51,7 +52,18 @@ export class PulseIspClient {
     return c;
   }
 
+  /** A URL é configurada pelo admin do tenant: nunca chamar endereço de metadata/rede interna (SSRF). */
+  private async assertSafe(baseUrl: string) {
+    try {
+      await assertSafeOutboundUrl(baseUrl);
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) throw new PulseIspError(`URL do PulseISP não permitida: ${err.message}`);
+      throw err;
+    }
+  }
+
   private async login(c: { baseUrl: string; email: string; password: string }, key: string): Promise<string> {
+    await this.assertSafe(c.baseUrl);
     let res: Response;
     try {
       res = await fetch(`${c.baseUrl}/auth/login`, {
@@ -79,6 +91,7 @@ export class PulseIspClient {
 
   private async get<T>(tenantId: string, path: string, allowRetry = true): Promise<T> {
     const c = await this.conn(tenantId);
+    await this.assertSafe(c.baseUrl);
     const key = `${tenantId}|${c.baseUrl}|${c.email}`;
     const cached = this.tokens.get(key);
     const token = cached && cached.expiresAt > Date.now() ? cached.token : await this.login(c, key);

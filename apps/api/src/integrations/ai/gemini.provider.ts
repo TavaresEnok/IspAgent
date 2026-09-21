@@ -1,15 +1,9 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { GoogleGenerativeAI, GenerativeModel, GenerateContentRequest } from '@google/generative-ai';
-import { Confidence, Intent } from '@ispagent/shared';
 import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
-import { buildReplyUserMessage, REPLY_SYSTEM_PROMPT } from './reply-prompt';
-
-const VALID_INTENTS: Intent[] = [
-  'SUPORTE_INTERNET', 'SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'FINANCEIRO', 'SEGUNDA_VIA',
-  'PAGAMENTO', 'BLOQUEIO', 'PLANO', 'UPGRADE', 'CONTRATACAO', 'CHAMADO', 'STATUS_CHAMADO',
-  'CANCELAMENTO', 'OUTRO',
-];
-const VALID_CONFIDENCES: Confidence[] = ['HIGH', 'MEDIUM', 'LOW'];
+import { buildReplySystemPrompt, buildReplyUserMessage } from './reply-prompt';
+import { CLASSIFY_SYSTEM_PROMPT, parseIntentClassification } from './json-extract';
+import { maskPii } from './pii-mask';
 
 // Modelos ultrarrápidos e eficientes para o atendimento (baixa latência e alta cota disponível).
 const FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite'];
@@ -116,29 +110,12 @@ export class GeminiProvider implements AIProvider {
     // 3. Somente se não houver palavra-chave clara, consulta o modelo externo com timeout estrito
     try {
       const result = await this.generate({
-        contents: [{ role: 'user', parts: [{ text: message }] }],
-        systemInstruction: {
-          role: 'system',
-          parts: [
-            {
-              text:
-                'Você classifica a mensagem de um cliente de provedor de internet em UMA destas intenções: ' +
-                `${VALID_INTENTS.join(', ')}. Responda SOMENTE um JSON: {"intent": "...", "confidence": "HIGH"|"MEDIUM"|"LOW"}.`,
-            },
-          ],
-        },
+        contents: [{ role: 'user', parts: [{ text: maskPii(message) }] }],
+        systemInstruction: { role: 'system', parts: [{ text: CLASSIFY_SYSTEM_PROMPT }] },
         generationConfig: { responseMimeType: 'application/json' },
       });
 
-      const text = result.response.text().replace(/^```(?:json)?\s*|\s*```$/g, '');
-      const parsed = JSON.parse(text) as { intent: string; confidence: string };
-
-      const intent = VALID_INTENTS.includes(parsed.intent as Intent) ? (parsed.intent as Intent) : 'OUTRO';
-      const confidence = VALID_CONFIDENCES.includes(parsed.confidence as Confidence)
-        ? (parsed.confidence as Confidence)
-        : 'LOW';
-
-      return { intent, confidence };
+      return parseIntentClassification(result.response.text());
     } catch (err) {
       this.logger.error(`classifyIntent falhou: ${err instanceof Error ? err.message : err}`);
       throw err;
@@ -167,15 +144,8 @@ export class GeminiProvider implements AIProvider {
             ],
           },
         ],
-        systemInstruction: {
-          role: 'system',
-          parts: [
-            {
-              text:
-                REPLY_SYSTEM_PROMPT,
-            },
-          ],
-        },
+        systemInstruction: { role: 'system', parts: [{ text: buildReplySystemPrompt(input.providerName) }] },
+        ...(input.maxOutputTokens ? { generationConfig: { maxOutputTokens: input.maxOutputTokens } } : {}),
       });
 
       return result.response.text().trim();

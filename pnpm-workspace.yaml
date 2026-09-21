@@ -8,3 +8,8 @@ allowBuilds:
   bcrypt: true
   msgpackr-extract: true
   prisma: true
+# Correções de segurança para dependências transitivas que o upstream ainda não atualizou. Declarado aqui
+# (pnpm >= 10) E em package.json#pnpm.overrides (pnpm 9) para o lockfile valer nas duas versões.
+overrides:
+  multer: ^2.3.0
+  postcss: ^8.5.23
