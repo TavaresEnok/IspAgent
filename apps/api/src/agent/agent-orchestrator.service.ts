@@ -12,6 +12,8 @@ import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolv
 import { PULSEISP_ADAPTER, PulseISPAdapter } from '../integrations/pulseisp/pulseisp-adapter.interface';
 import { createPulseISPQueryTool } from '../tools/pulseisp-tool';
 import { isPulseId } from '../integrations/pulseisp/pulseisp-ids';
+import { PulseIspClient } from '../integrations/pulseisp/pulseisp-client.service';
+import { PulseIspMirrorService } from '../integrations/pulseisp/pulseisp-mirror.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { ClaimValidatorService, ClaimInvariantViolationError } from './claim-validator.service';
 import { IdentityResolution, IdentityResolutionService, normalizeDocument } from '../identity/identity-resolution.service';
@@ -110,6 +112,8 @@ export class AgentOrchestratorService {
     private readonly aiResolver: AiProviderResolverService,
     @Inject(PULSEISP_ADAPTER) pulseisp: PulseISPAdapter,
     private readonly handoff: HandoffService,
+    @Optional() private readonly pulseClient?: PulseIspClient,
+    @Optional() private readonly pulseMirror?: PulseIspMirrorService,
     @Optional() identity?: IdentityResolutionService,
   ) {
     this.identity = identity ?? new IdentityResolutionService(db);
@@ -651,10 +655,26 @@ export class AgentOrchestratorService {
     if (failures >= handoffAfterFailures) return { kind: 'locked' };
 
     const conversationRecord = await this.db.client.conversation.findUniqueOrThrow({ where: { id: conversationId } });
-    const resolution =
+    let resolution =
       current.method === 'AMBIGUOUS'
         ? await this.identity.resolveByPhoneAndDocument(conversationRecord.channelUserId, digits)
         : await this.identity.resolveByDocument(digits);
+
+    // Fallback PulseISP: quando o cliente não está no banco local, tenta pelo login PPPoE (que nas
+    // operadoras brasileiras costuma ser o CPF sem formatação). Só para CPF (11 dígitos), não CNPJ.
+    if (resolution.method === 'NOT_FOUND' && digits.length === 11 && pulseIspEnabled() && this.pulseClient && this.pulseMirror) {
+      try {
+        const found = await this.pulseClient.findByPppoeLogin(tenantId, digits);
+        if (found) {
+          const c360 = await this.pulseClient.customer360(tenantId, found.id);
+          await this.pulseMirror.upsertFromCustomer360(tenantId, c360, { document: digits });
+          resolution = await this.identity.resolveByDocument(digits);
+          this.logger.log(`[identity] CPF ${digits.slice(-4)} identificado via PulseISP pppoeLogin`);
+        }
+      } catch (err) {
+        this.logger.warn(`[identity] Falha no fallback PulseISP: ${err instanceof Error ? err.message : err}`);
+      }
+    }
 
     if (resolution.method === 'DOCUMENT' && resolution.contractId) {
       const customer = await this.db.client.customer.findUnique({

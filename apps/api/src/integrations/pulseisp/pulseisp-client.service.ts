@@ -16,7 +16,7 @@ export interface PulseCustomerSummary {
   status: string;
   healthScore: number | null;
   healthBand: string | null;
-  contract: { plan: { name: string; downloadMbps: number } | null } | null;
+  contract: { externalId?: string; pppoeLogin?: string; plan: { name: string; downloadMbps: number } | null } | null;
 }
 
 export class PulseIspError extends Error {
@@ -118,6 +118,21 @@ export class PulseIspClient {
   async searchCustomers(tenantId: string, search: string) {
     const q = encodeURIComponent(search.trim().slice(0, 80));
     return this.get<{ items: PulseCustomerSummary[]; total: number }>(tenantId, `/customers?search=${q}&pageSize=15`);
+  }
+
+  /**
+   * Busca cliente pelo login PPPoE, que nas operadoras brasileiras costuma ser o CPF sem formatação.
+   * Retorna o único cliente cujo contrato ativo tem `pppoeLogin === digits`, ou `null` se não encontrar
+   * exatamente um (zero ou ambiguidade — não identifica).
+   */
+  async findByPppoeLogin(tenantId: string, digits: string): Promise<PulseCustomerSummary | null> {
+    try {
+      const result = await this.searchCustomers(tenantId, digits);
+      const exact = result.items.filter((c) => c.contract?.pppoeLogin === digits);
+      return exact.length === 1 ? exact[0] : null;
+    } catch {
+      return null;
+    }
   }
 
   async customer360(tenantId: string, customerId: string) {
