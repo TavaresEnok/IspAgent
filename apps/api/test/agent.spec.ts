@@ -13,6 +13,7 @@ import { ConversationService } from '../src/conversation/conversation.service';
 import { IdentityResolutionService } from '../src/identity/identity-resolution.service';
 import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.service';
 import { runWithTenant } from '../src/common/tenant-context';
+import { fixedAiResolver } from './helpers/ai-resolver';
 
 /**
  * Agent Orchestrator ponta a ponta (seção 3.3): mensagem → identidade → intenção → ferramenta permitida
@@ -41,7 +42,7 @@ describe('AgentOrchestratorService', () => {
     const pulseisp = new MockPulseISPAdapter(db);
     const handoff = new HandoffService(db);
 
-    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp, handoff);
+    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, fixedAiResolver(ai), pulseisp, handoff);
   });
 
   afterAll(async () => {
@@ -185,5 +186,29 @@ describe('AgentOrchestratorService', () => {
     });
 
     expect(decision.identity).toBeNull();
+  });
+
+  it('saudação/conversa solta recebe a orientação fixa (não a frase de "registro não encontrado") e NÃO abre handoff', async () => {
+    for (const message of ['olá', 'confirmar o quê?', 'quanto é 2 + 2?']) {
+      const { decision, reply, handoffs } = await runWithTenant('tnt_demo_alpha', async () => {
+        const conv = await db.client.conversation.create({
+          data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: freshPhone(), status: 'AI_ACTIVE' },
+        });
+        const d = await ask(conv.id, message);
+        const last = await db.client.message.findFirst({
+          where: { conversationId: conv.id, role: 'AGENT' },
+          orderBy: { createdAt: 'desc' },
+        });
+        const h = await db.client.handoff.count({ where: { conversationId: conv.id } });
+        return { decision: d, reply: last?.content ?? '', handoffs: h };
+      });
+
+      expect(decision.intent).toBe('OUTRO');
+      expect(decision.outcome).toBe('ANSWERED');
+      expect(decision.claims).toHaveLength(0);
+      expect(handoffs).toBe(0);
+      expect(reply).toContain('Consigo ajudar com');
+      expect(reply).not.toMatch(/não encontrei esse registro/i);
+    }
   });
 });

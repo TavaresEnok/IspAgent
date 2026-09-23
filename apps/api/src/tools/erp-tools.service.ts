@@ -18,7 +18,7 @@ export class ErpToolsService {
   readonly supportCreateTicketTool;
   readonly planViewTool;
 
-  constructor(@Inject(ERP_ADAPTER) erp: ERPAdapter) {
+  constructor(@Inject(ERP_ADAPTER) readonly erp: ERPAdapter) {
     this.billingTool = createBillingTool(erp);
     this.supportGetTicketsTool = createSupportGetTicketsTool(erp);
     this.supportCreateTicketTool = createSupportCreateTicketTool(erp);

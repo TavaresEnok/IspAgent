@@ -2,12 +2,13 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { apiLogin, setSession, ApiError } from '@/lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@alpha.ispagent.local');
-  const [password, setPassword] = useState('Demo!2026');
+  const [email, setEmail] = useState('admin@vibe.ispagent.local');
+  const [password, setPassword] = useState('Vibe!2026');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -20,60 +21,107 @@ export default function LoginPage() {
       setSession(accessToken, refreshToken);
       router.push('/dashboard');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Falha ao conectar com a API');
+      setError(err instanceof ApiError ? err.message : 'Falha ao autenticar no servidor');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
-      <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-8 shadow-sm">
-        <h1 className="mb-1 text-xl font-semibold text-slate-900">ISPAgent</h1>
-        <p className="mb-6 text-sm text-slate-500">Painel de atendimento — login de staff</p>
+    <main className="relative flex min-h-screen items-center justify-center bg-slate-950 p-4 font-sans text-slate-100">
+      {/* Background glow effects */}
+      <div className="pointer-events-none fixed inset-0 flex items-center justify-center overflow-hidden">
+        <div className="h-[450px] w-[450px] rounded-full bg-cyan-600/15 blur-[130px]" />
+        <div className="h-[400px] w-[400px] rounded-full bg-blue-600/15 blur-[140px]" />
+      </div>
+
+      <div className="relative w-full max-w-md rounded-2xl border border-slate-800/90 bg-slate-900/80 p-8 shadow-2xl backdrop-blur-xl">
+        {/* Brand Header */}
+        <div className="mb-6 flex items-center gap-3.5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 font-extrabold text-white shadow-lg shadow-cyan-500/25 text-2xl">
+            V
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold tracking-tight text-white">Vibe Telecom</h1>
+              <span className="rounded-full bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 text-[10px] font-semibold text-cyan-400">
+                Staff NOC
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">Painel Operacional do Provedor</p>
+          </div>
+        </div>
+
+        <p className="mb-6 text-xs text-slate-300 leading-relaxed">
+          Entre com as credenciais da sua equipe para acessar o dashboard de atendimentos, gerenciar a fila de transbordo e monitorar as integrações.
+        </p>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium text-slate-700">E-mail</span>
+          <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-300">
+            <span>E-mail Corporativo</span>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+              placeholder="seu.email@vibetelecom.com.br"
+              className="rounded-xl border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none transition"
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium text-slate-700">Senha</span>
+
+          <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-300">
+            <span>Senha de Acesso</span>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="rounded border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+              placeholder="••••••••"
+              className="rounded-xl border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none transition"
             />
           </label>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
+              {error}
+            </div>
+          )}
 
           <button
             type="submit"
             disabled={loading}
-            className="mt-2 rounded bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-500/25 hover:brightness-110 active:scale-[0.99] disabled:opacity-50 transition"
           >
-            {loading ? 'Entrando...' : 'Entrar'}
+            {loading ? (
+              <>
+                <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                <span>Autenticando...</span>
+              </>
+            ) : (
+              <span>Acessar Painel</span>
+            )}
           </button>
         </form>
 
-        <div className="mt-6 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-          <p className="mb-1 font-medium">Credenciais DEMO</p>
-          <p>admin@alpha.ispagent.local / Demo!2026 (TENANT_ADMIN)</p>
-          <p>operador@alpha.ispagent.local / Demo!2026 (AGENT)</p>
+        {/* Tenant Information Badge */}
+        <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 text-xs text-slate-400">
+          <div className="flex items-center justify-between font-medium text-slate-300 mb-1">
+            <span>Tenant Ativo</span>
+            <span className="font-mono text-cyan-400 text-[11px]">Vibe Telecom (tnt_vibe)</span>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            Ambiente conectado ao SGP oficial da Vibe Telecom (<code className="text-slate-300">vibetelecom.sgp.net.br</code>).
+          </p>
         </div>
 
-        <a href="/webchat" className="mt-4 block text-center text-xs text-slate-400 hover:text-slate-600">
-          Ir para o Web Chat do cliente →
-        </a>
+        <div className="mt-6 flex items-center justify-between border-t border-slate-800/80 pt-4 text-xs">
+          <Link href="/" className="text-slate-400 hover:text-slate-200 transition">
+            ← Voltar ao início
+          </Link>
+          <Link href="/webchat" className="text-cyan-400 hover:text-cyan-300 font-medium transition">
+            Testar Web Chat →
+          </Link>
+        </div>
       </div>
     </main>
   );

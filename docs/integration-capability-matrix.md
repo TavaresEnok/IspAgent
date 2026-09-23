@@ -11,16 +11,15 @@ oficial acessível para conferência ponto a ponto, o que a seção 0.2 proíbe 
 
 | Capacidade | ERP DEMO (Mock) | IXC | SGP | PulseISP | WhatsApp |
 |---|---|---|---|---|---|
-| Buscar cliente | ✅ VALIDADO (real contra Postgres seedado, `test/erp.spec.ts`) | ESTRUTURADO, NÃO VALIDADO (sem doc oficial acessível) | ESTRUTURADO, NÃO VALIDADO (idem) | — | — |
-| Consultar plano | ✅ VALIDADO (`test/erp.spec.ts`, `PlanTool`) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
-| Fatura / segunda via | ✅ VALIDADO (`BillingTool`, `test/billing.spec.ts` — inclui P0.2) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
-| Abrir chamado | ✅ VALIDADO (`SupportTool`, idempotente, `test/support.spec.ts`) | ESTRUTURADO, NÃO VALIDADO | ESTRUTURADO, NÃO VALIDADO | — | — |
-| Health Score | — | — | — | ✅ VALIDADO (mock — real segue INDISPONÍVEL, sem OpenAPI do PulseISP disponível; `test/pulseisp.spec.ts`, P0.3/P0.4) | — |
+| Buscar cliente | ✅ VALIDADO (real contra Postgres seedado, `test/erp.spec.ts`) | ESTRUTURADO, NÃO VALIDADO (sem doc oficial acessível) | 🟡 REAL IMPLEMENTADO (`SGPAdapter` + `POST /api/ura/consultacliente/`, testado em `test/sgp.spec.ts`; aguarda liberação de IP no painel do SGP) | — | — |
+| Consultar plano | ✅ VALIDADO (`test/erp.spec.ts`, `PlanTool`) | ESTRUTURADO, NÃO VALIDADO | 🟡 REAL IMPLEMENTADO (`GET /api/ura/consultaplano/`, testado em `test/sgp.spec.ts`) | — | — |
+| Fatura / segunda via | ✅ VALIDADO (`BillingTool`, `test/billing.spec.ts` — inclui P0.2) | ESTRUTURADO, NÃO VALIDADO | 🟡 REAL IMPLEMENTADO (`POST /api/ura/titulos/` + PIX, testado em `test/sgp.spec.ts`) | — | — |
+| Abrir chamado | ✅ VALIDADO (`SupportTool`, idempotente, `test/support.spec.ts`) | ESTRUTURADO, NÃO VALIDADO | 🟡 REAL IMPLEMENTADO (`POST /api/ura/chamado/`, testado em `test/sgp.spec.ts`) | — | — |
+| Health Score | — | — | — | ✅ VALIDADO (mock, `test/pulseisp.spec.ts`, P0.3/P0.4). 🟡 REAL IMPLEMENTADO, AINDA NÃO VALIDADO com dados reais (2026-09-18): `RealPulseISPAdapter` + mapeador escritos a partir do OpenAPI/código do próprio PulseISP e testados com fixtures (`test/pulseisp-real.spec.ts`); falta um login de leitura para rodar contra o PulseISP de verdade (botão "Testar" + simulador na tela PulseISP) | — |
 | Receber mensagem | — | — | — | — | INDISPONÍVEL (fase 9 estrutura o adapter/webhook; sem credencial Meta, fica `NÃO VALIDADO end-to-end` mesmo depois de implementado) |
 
-"ESTRUTURADO, NÃO VALIDADO" (IXC/SGP) = a classe implementa `ERPAdapter` (`IXCAdapter`/`SGPAdapter`,
-seção 6.1 passo 4) mas todo método lança erro explicando a ausência de documentação — nunca retorna dado
-fabricado se fosse chamado por engano.
+"ESTRUTURADO, NÃO VALIDADO" (IXC) = a classe implementa `ERPAdapter` mas todo método lança erro explicando a ausência de documentação.
+"REAL IMPLEMENTADO" (SGP) = `SgpClientService` e `SGPAdapter` implementados a partir da documentação oficial (`docs/SGP-API.md`), com testes unitários cobrindo o mapeamento de clientes, contratos, planos, faturas (com PIX) e chamados (`test/sgp.spec.ts`). Validado localmente com mocks; pronto para execução ao vivo contra `vibetelecom.sgp.net.br` assim que o IP for liberado no painel do SGP.
 
 ## AI Provider (seção 6.4)
 
@@ -42,8 +41,8 @@ fabricado se fosse chamado por engano.
 | Integração | Fonte consultada | Resultado |
 |---|---|---|
 | IXC | nenhuma documentação oficial fornecida/acessível nesta sessão | sem base para validar endpoints reais; `ERPAdapter` + `MockERPAdapter` seguirão a interface conceitual da seção 6.1, sem inventar payloads específicos do IXC |
-| SGP | nenhuma documentação oficial fornecida/acessível nesta sessão | idem |
-| PulseISP | produto irmão citado no prompt, sem OpenAPI compartilhado nesta sessão | `PulseISPAdapter` consumirá apenas o contrato `CustomerNetworkHealth` (seção 3.4); `RealPulseISPAdapter` fica como stub que lança `NOT_SUPPORTED` até o OpenAPI real chegar |
+| SGP | Documentação oficial em `docs/SGP-API.md`, guia público de autenticação do Bookstack (`autenticacoes-via-api`) e instância real da Vibe Telecom (`https://vibetelecom.sgp.net.br`) | `SgpClientService` e `SGPAdapter` implementados; autenticação via `token` e `app` (`webchatnoc`) nas rotas da URA (`/api/ura/`). Testado unitariamente com mocks dos payloads reais em `test/sgp.spec.ts`. Chamadas ao vivo retornam HTTP 403 enquanto o IP da máquina (`168.194.15.42`) não for inserido na lista de Hosts Permitidos do Token no SGP. |
+| PulseISP | produto irmão rodando na mesma máquina (API em `:4000`, OpenAPI em `/api/docs-json`, auth por login/JWT). Tem um tenant real (`vibe-telecom`, ~3.172 clientes via SGP) | `RealPulseISPAdapter` (2026-09-18): lê `GET /customers/{id}` (Customer 360) e `GET /anomalies/{id}` e mapeia para `CustomerNetworkHealth`; só para contratos `pulse_*` (clientes reais escolhidos no simulador do painel), o resto segue no mock. SOMENTE leitura. Limitações reais: o PulseISP não fornece faturas nem chamados nesse formato, então o agente NÃO responde financeiro/chamado de cliente real (escala para humano); escopo de anomalia `CONCENTRATOR` vira `REGION`; `reconnects7d` fica `null` (o PulseISP não separa de quedas) |
 | WhatsApp Cloud API | documentação pública da Meta existe e é consultável, mas nenhuma credencial (App Secret, token, verify token) foi fornecida nesta sessão para validar ponta a ponta | adapter/webhook handler serão estruturados seguindo o formato público conhecido da Cloud API (payloads de webhook, verificação de assinatura), mas o rótulo fica `NÃO VALIDADO end-to-end` até haver credencial real para testar |
 | Anthropic (Claude) | documentação oficial do `@anthropic-ai/sdk` | SDK integrado e lógica testável, mas sem `ISPAGENT_ANTHROPIC_API_KEY` nesta sessão para uma chamada real — ver `docs/privacy-and-ai.md` |
 

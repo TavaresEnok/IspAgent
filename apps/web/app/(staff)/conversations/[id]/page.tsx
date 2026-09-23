@@ -55,10 +55,29 @@ export default function ConversationDetailPage() {
   const params = useParams<{ id: string }>();
   const [conv, setConv] = useState<ConversationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
 
-  useEffect(() => {
+  function load() {
     apiFetch<ConversationDetail>(`/conversations/${params.id}`).then(setConv).catch((e) => setError(e.message));
-  }, [params.id]);
+  }
+
+  useEffect(load, [params.id]);
+
+  async function sendReply() {
+    if (!reply.trim() || sending) return;
+    setSending(true);
+    try {
+      await apiFetch(`/conversations/${params.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content: reply }),
+      });
+      setReply('');
+      load();
+    } finally {
+      setSending(false);
+    }
+  }
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
   if (!conv) return <p className="text-sm text-slate-500">Carregando...</p>;
@@ -86,7 +105,9 @@ export default function ConversationDetailPage() {
                     ? 'self-start bg-slate-100 text-slate-800'
                     : m.role === 'AGENT'
                       ? 'self-end bg-slate-900 text-white'
-                      : 'self-center bg-amber-50 text-amber-800'
+                      : m.role === 'HUMAN'
+                        ? 'self-end bg-blue-600 text-white'
+                        : 'self-center bg-amber-50 text-amber-800'
                 }`}
               >
                 <div className="mb-0.5 text-[10px] uppercase opacity-60">{m.role}</div>
@@ -94,6 +115,30 @@ export default function ConversationDetailPage() {
               </div>
             ))}
           </div>
+
+          {conv.status === 'HUMAN_ACTIVE' ? (
+            <div className="mt-3 flex gap-2 border-t border-slate-100 pt-3">
+              <input
+                value={reply}
+                onChange={(e) => setReply(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendReply()}
+                placeholder="Responder como atendente..."
+                className="flex-1 rounded border border-slate-300 px-3 py-2 text-sm"
+              />
+              <button
+                onClick={sendReply}
+                disabled={sending}
+                className="rounded bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                Enviar
+              </button>
+            </div>
+          ) : (
+            <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-400">
+              Só é possível responder manualmente depois de assumir esta conversa na Fila humana (status
+              atual: {conv.status}).
+            </p>
+          )}
         </section>
 
         <section className="rounded border border-slate-200 bg-white p-4">

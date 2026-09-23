@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthController } from './health/health.controller';
 import { AuthModule } from './auth/auth.module';
@@ -22,6 +24,13 @@ import { IntegrationsStatusModule } from './integrations-status/integrations-sta
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Rate limiting global (P1 "endpoints que provocam LLM/tool calls não podem ficar sem limite" —
+    // uma API pública que aciona LLM sem limitação pode virar custo descontrolado, não só um risco de
+    // segurança). Limite geral generoso aqui; rotas sensíveis (login, Web Chat público) sobrescrevem
+    // com `@Throttle(...)` mais estrito. Contador em memória do processo — suficiente para um único
+    // container `ispagent-api`; se o serviço escalar horizontalmente, trocar `storage` por Redis
+    // (`@nestjs/throttler` suporta um `ThrottlerStorageRedisService`).
+    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
     PrismaModule,
     AuthModule,
     TenancyModule,
@@ -41,5 +50,6 @@ import { IntegrationsStatusModule } from './integrations-status/integrations-sta
     IntegrationsStatusModule,
   ],
   controllers: [HealthController],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

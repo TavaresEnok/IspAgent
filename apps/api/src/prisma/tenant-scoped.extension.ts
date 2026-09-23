@@ -8,6 +8,9 @@ import { currentTenantId } from '../common/tenant-context';
 const TENANT_SCOPED_MODELS = new Set([
   'User',
   'TenantPolicyConfig',
+  'AiProviderConfig',
+  'AiProviderCredential',
+  'PulseIspConnection',
   'Customer',
   'Plan',
   'Contract',

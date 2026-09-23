@@ -1,31 +1,21 @@
 import { Module } from '@nestjs/common';
-import { AI_PROVIDER } from './ai-provider.interface';
 import { MockAIProvider } from './mock-ai.provider';
 import { AnthropicProvider } from './anthropic.provider';
+import { GeminiProvider } from './gemini.provider';
 import { OpenAIProvider } from './openai.provider';
+import { AiConfigService } from './ai-config.service';
+import { AiConfigController } from './ai-config.controller';
+import { AiProviderResolverService } from './ai-provider-resolver.service';
 
 /**
- * Seleciona o AIProvider ativo. Sem `ISPAGENT_ANTHROPIC_API_KEY`, cai para `MockAIProvider` sempre —
- * nunca falha o boot por falta de credencial de IA (seção 6.4).
+ * `AiProviderResolverService` resolve o provider ativo POR TENANT, lendo `AiProviderConfig` do banco
+ * (tela "IA" do painel) — substituiu a escolha fixa no boot via `AI_PROVIDER`/env var, porque o
+ * usuário pediu explicitamente para trocar de provider e colar a chave sem editar `.env` nem
+ * reiniciar o container.
  */
 @Module({
-  providers: [
-    MockAIProvider,
-    AnthropicProvider,
-    OpenAIProvider,
-    {
-      provide: AI_PROVIDER,
-      useFactory: (mock: MockAIProvider, anthropic: AnthropicProvider, openai: OpenAIProvider) => {
-        const configured = process.env.ISPAGENT_AI_PROVIDER ?? 'anthropic';
-        const hasAnthropicKey = Boolean(process.env.ISPAGENT_ANTHROPIC_API_KEY);
-
-        if (configured === 'openai') return openai;
-        if (configured === 'anthropic' && hasAnthropicKey) return anthropic;
-        return mock;
-      },
-      inject: [MockAIProvider, AnthropicProvider, OpenAIProvider],
-    },
-  ],
-  exports: [AI_PROVIDER],
+  controllers: [AiConfigController],
+  providers: [MockAIProvider, AnthropicProvider, GeminiProvider, OpenAIProvider, AiConfigService, AiProviderResolverService],
+  exports: [AiConfigService, AiProviderResolverService],
 })
 export class AiProviderModule {}

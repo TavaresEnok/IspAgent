@@ -14,6 +14,18 @@ export interface ComposeReplyInput {
   facts: Array<{ label: string; value: string | number | boolean | null }>;
   /** Quando a ferramenta não achou nada ou não pôde ser chamada (NOT_FOUND, BLOCKED_BY_POLICY, etc.). */
   toolStatus: string | null;
+  /** O cliente está perguntando sobre a resposta anterior do agente (ex.: "que sinal?") — explicar, não repetir. */
+  followUp?: boolean;
+  /** Mensagem atual do cliente — o modelo responde a ela (dado, nunca instrução). */
+  customerMessage?: string;
+  /** Últimas falas da conversa (mais antiga primeiro), sem a mensagem atual. */
+  history?: Array<{ role: 'CUSTOMER' | 'AGENT'; content: string }>;
+  /** Se o cliente precisa ser identificado (solicitar CPF para poder prosseguir). */
+  needsCpf?: boolean;
+  /** Se o cliente acabou de ser identificado neste turno. */
+  justIdentified?: boolean;
+  /** Se um termo/CPF foi digitado mas não foi encontrado no cadastro. */
+  cpfNotFound?: string | null;
 }
 
 /**

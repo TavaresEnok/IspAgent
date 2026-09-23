@@ -13,6 +13,7 @@ import { IdentityResolutionService } from '../src/identity/identity-resolution.s
 import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.service';
 import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
+import { fixedAiResolver } from './helpers/ai-resolver';
 
 /**
  * P0.5 — handoff gera resumo, entra na fila, atendente assume e a IA para de responder; teste de que
@@ -40,7 +41,7 @@ describe('Handoff', () => {
     const ai = new MockAIProvider();
     const pulseisp = new MockPulseISPAdapter(db);
 
-    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp, handoff);
+    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, fixedAiResolver(ai), pulseisp, handoff);
   });
 
   afterAll(async () => {

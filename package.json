@@ -13,6 +13,7 @@
     "db:seed": "pnpm --filter @ispagent/api db:seed",
     "test": "pnpm --filter @ispagent/api test",
     "test:shared": "pnpm --filter @ispagent/shared test",
+    "test:e2e": "pnpm --filter @ispagent/e2e test",
     "lint": "pnpm -r lint"
   },
   "devDependencies": {

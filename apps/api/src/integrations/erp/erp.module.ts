@@ -3,6 +3,7 @@ import { ERP_ADAPTER } from './erp-adapter.interface';
 import { MockERPAdapter } from './mock-erp.adapter';
 import { IXCAdapter } from './ixc.adapter';
 import { SGPAdapter } from './sgp.adapter';
+import { SgpClientService } from './sgp-client.service';
 
 /**
  * Seleciona o ERPAdapter concreto por `ISPAGENT_ERP_PROVIDER` (demo|ixc|sgp — default demo). Nenhum
@@ -11,6 +12,7 @@ import { SGPAdapter } from './sgp.adapter';
  */
 @Module({
   providers: [
+    SgpClientService,
     MockERPAdapter,
     IXCAdapter,
     SGPAdapter,
@@ -29,6 +31,6 @@ import { SGPAdapter } from './sgp.adapter';
       inject: [MockERPAdapter, IXCAdapter, SGPAdapter],
     },
   ],
-  exports: [ERP_ADAPTER],
+  exports: [ERP_ADAPTER, SgpClientService, SGPAdapter],
 })
 export class ERPModule {}

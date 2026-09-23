@@ -1,11 +1,18 @@
 # STATE
 Fase atual: nenhuma — as 10 fases da seção 10 estão completas e aprovadas nesta sessão.
 Última fase com gate APROVADO: 10 — Validação (commit: ver próximo commit após este arquivo)
-Último comando executado com sucesso: `.\scripts\verify.ps1 -Fresh` → **exit code 0**, 17/17 passos PASS, a partir de rebuild completo (containers + volumes destruídos e recriados). `pnpm --filter @ispagent/api test` → 87/87.
+Último comando executado com sucesso: `.\scripts\verify.ps1 -Fresh` → **exit code 0**, 17/17 passos PASS, a partir de rebuild completo (containers + volumes destruídos e recriados). `pnpm --filter @ispagent/api test` → 88/88 (adicionado payload 4 em `security.spec.ts`: pedido fora de escopo/"fibonacci" nunca vira código na resposta — prova estrutural de que `composeReply` nunca recebe o texto bruto do cliente).
 Próxima ação concreta (se uma sessão futura continuar): tudo em `docs/*.md` marcado como limitação real e não implementado nesta sessão é o backlog natural — ver especialmente "Não implementado" em `docs/security.md` (rate limiting, CSRF, secret manager, headers) e as limitações da Fase 9 em `PROGRESS.md` (WebSocket/SSE no Web Chat, telas de credencial de ERP/PulseISP/WhatsApp, `verify.sh` nunca executado ponta a ponta por falta de `jq` nesta sessão Windows). Nenhuma dessas é um P0 pendente — os 10 P0 da seção 11 estão todos aprovados.
 Arquivos em edição incompleta: nenhum
 Bloqueios ativos: nenhum. Limitações estruturais documentadas (não bloqueios): sem credenciais/documentação oficial de IXC, SGP, PulseISP ou WhatsApp Cloud API nesta sessão (docs/integration-capability-matrix.md); AnthropicProvider implementado mas não validado ponta a ponta (sem API key); `verify.sh` sintaticamente válido mas não executado (sem `jq` neste ambiente Windows) — `verify.ps1` é o caminho validado.
 Invariantes que já passam — **os 10 P0 da seção 11, todos**: P0.1 (identidade), P0.2 (BillingTool real), P0.3 (fato ausente nunca citado), P0.4 (PulseISP ligado/desligado), P0.5 (handoff completo, AI→HUMAN→AI), P0.6 (policy bloqueia de fato), P0.7 (ambíguo/não encontrado nunca vinculado errado), P0.8 (isolamento de tenant), P0.9 (prompt injection não eleva privilégio, 3 payloads), P0.10 (`verify.ps1 -Fresh` exit 0). Ver `docs/acceptance-evidence.md` para o cruzamento completo com a evidência de cada um.
+
+**P1 (desejáveis, seção 11): 9/10 aprovado** — placar corrigido em 2026-09-15 (ver `PROGRESS.md`,
+seção "Placar P1"). Os itens "comportamento quando o AI Provider falha" e "comportamento quando o ERP
+falha" foram implementados/provados (`apps/api/test/upstream-failures.spec.ts`) e "troca AI → humano
+→ AI" ganhou a metade que faltava (atendente responder de fato, `POST /conversations/:id/messages`).
+Só falta Web Chat em tempo real (WebSocket/SSE) — backlog consciente, não bloqueia nada. P0 nunca
+dependeu de nenhum destes.
 
 ## Notas para a próxima sessão
 

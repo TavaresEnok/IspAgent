@@ -5,14 +5,17 @@ import { ToolDefinition } from './tool.types';
 
 type Fact = ToolResult['facts'][number];
 
-export function createPulseISPQueryTool(pulseisp: PulseISPAdapter): ToolDefinition<{ contractId: string }, unknown> {
+export function createPulseISPQueryTool(
+  pulseisp: PulseISPAdapter,
+  opts: { mode: 'DEMO' | 'LIVE'; adapterName?: string } = { mode: 'DEMO' },
+): ToolDefinition<{ contractId: string }, unknown> {
   return {
     name: 'PulseISPTool',
     action: 'pulseisp.query',
     inputSchema: z.object({ contractId: z.string().min(1) }),
-    adapter: pulseisp.name,
+    adapter: opts.adapterName ?? pulseisp.name,
     capability: 'network_health',
-    mode: 'DEMO',
+    mode: opts.mode,
     execute: async (input) => {
       const health = await pulseisp.getCustomerNetworkHealth(input.contractId);
       if (!health) {

@@ -15,6 +15,7 @@ import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.servic
 import { ClaimValidatorService } from '../src/agent/claim-validator.service';
 import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
+import { fixedAiResolver } from './helpers/ai-resolver';
 
 /**
  * P0.4 — com MockPulseISP, problema coletivo muda o comportamento; sem PulseISP (flag desligada) o
@@ -45,7 +46,7 @@ describe('PulseISP', () => {
     const ai = new MockAIProvider();
     const handoff = new HandoffService(db);
 
-    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, ai, pulseisp, handoff);
+    orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, fixedAiResolver(ai), pulseisp, handoff);
   });
 
   afterAll(async () => {

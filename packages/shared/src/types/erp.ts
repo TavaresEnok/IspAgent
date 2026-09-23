@@ -35,6 +35,9 @@ export interface Invoice {
   dueDate: string;
   paidAt: string | null;
   barcodeUrl: string | null;
+  pixCode?: string | null;
+  pdfUrl?: string | null;
+  digitableLine?: string | null;
 }
 
 export interface FinancialStatus {

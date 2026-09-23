@@ -14,6 +14,7 @@ export interface PolicyDecision {
 /** Configuração de policy por tenant (seção 4). */
 export interface TenantPolicyConfig {
   policyVersion: string;
+  readOnlyMode?: boolean;
   canCreateTicket: boolean;
   canAccessBilling: boolean;
   canSendInvoice: boolean;
@@ -27,6 +28,7 @@ export interface TenantPolicyConfig {
 }
 
 export const DEFAULT_TENANT_POLICY_CONFIG: Omit<TenantPolicyConfig, 'policyVersion'> = {
+  readOnlyMode: false,
   canCreateTicket: true,
   canAccessBilling: true,
   canSendInvoice: true,

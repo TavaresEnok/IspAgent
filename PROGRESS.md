@@ -300,6 +300,32 @@ Dois bugs reais encontrados e corrigidos durante o teste no browser:
   mudar a conversa.
 - Sem paginação de UI nas listas (a API já pagina; o frontend sempre pede a primeira página grande).
 
+## Placar P1 (seção 11) — correção de uma imprecisão do Relatório Final
+
+O Relatório Final desta sessão afirmou "não sobrou nada pendente das 10 fases nem dos critérios
+P0/P1", o que era impreciso: os 10 P0 sempre estiveram 10/10 aprovados, mas os P1 (desejáveis)
+estavam 7/10, não 10/10. Placar original registrado em 2026-09-15 e **atualizado no mesmo dia** após
+uma sessão de "endurecimento pós-MVP" motivada por uma revisão externa do Relatório Final (ver
+DECISIONS.md, entrada "Endurecimento pós-MVP"):
+
+| # | Critério P1 | Status |
+|---|---|---|
+| 1 | Consultar plano | ✅ aprovado (`PlanTool`, VIEW) |
+| 2 | Consultar chamado | ✅ aprovado (`supportGetTicketsTool`) |
+| 3 | Criar chamado com contexto | ✅ aprovado (`supportCreateTicketTool`) |
+| 4 | Web Chat em tempo real | ❌ backlog — polling/request-response, sem WebSocket/SSE (deliberadamente não priorizado; ver DECISIONS.md) |
+| 5 | KB respondendo com fonte | ✅ aprovado (`KnowledgeDocument.source` retornado nos facts) |
+| 6 | Dashboard com métricas DEMO | ✅ aprovado (`/dashboard`, dados reais do backend) |
+| 7 | Policies configuráveis pela UI | ✅ aprovado (`/policies`, toggle + PATCH real) |
+| 8 | Troca AI → humano → AI | ✅ aprovado — agora completo: `HandoffService.assume`/`returnToAI` + `POST /conversations/:id/messages` (atendente responde de fato ao cliente, não só muda o status), provado ponta a ponta em `apps/e2e/tests/main-flow.spec.ts` |
+| 9 | Comportamento correto quando o AI Provider falha | ✅ aprovado — `AgentOrchestratorService` agora protege `classifyIntent`/`composeReply` com try/catch, nunca inventa intenção/resposta, sempre escala pra humano com mensagem SYSTEM; provado em `apps/api/test/upstream-failures.spec.ts` |
+| 10 | Comportamento correto quando o ERP falha | ✅ aprovado — já era estruturalmente correto (`ToolExecutorService` sempre convertia exceção em `UPSTREAM_ERROR`/`TIMEOUT`), só faltava o teste provando; feito em `apps/api/test/upstream-failures.spec.ts` (ERP e PulseISP) |
+
+**9/10 aprovado, 1/10 backlog.** Só o item 4 (Web Chat em tempo real) segue como backlog consciente —
+é puramente uma melhoria de experiência (request/response já prova o produto ponta a ponta), e foi
+explicitamente deprioritizado numa revisão externa do projeto em favor de validar IA real, ERP real e
+WhatsApp antes.
+
 ---
 
 ## Fase 10 — Validação

@@ -1,4 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
+import { currentTenantId } from '../common/tenant-context';
+import { AiConfigService } from '../integrations/ai/ai-config.service';
 
 /**
  * Tela "Integrações" (seção 10.1) — status HONESTO de cada adapter, o mesmo espírito de
@@ -6,13 +8,20 @@ import { Controller, Get } from '@nestjs/common';
  */
 @Controller('integrations/status')
 export class IntegrationsStatusController {
+  constructor(private readonly aiConfig: AiConfigService) {}
+
   @Get()
-  status() {
+  async status() {
     const erpProvider = process.env.ISPAGENT_ERP_PROVIDER ?? 'demo';
-    const aiConfigured = process.env.ISPAGENT_AI_PROVIDER ?? 'anthropic';
-    const hasAnthropicKey = Boolean(process.env.ISPAGENT_ANTHROPIC_API_KEY);
     const pulseIspEnabled = process.env.ISPAGENT_PULSEISP_ENABLED === 'true';
     const whatsappEnabled = process.env.ISPAGENT_CHANNEL_WHATSAPP_ENABLED === 'true';
+
+    // Config de IA vem do banco (tela "IA" do painel), não mais de env var fixada no boot — ver
+    // AiProviderResolverService.
+    const overview = await this.aiConfig.getOverview(currentTenantId() as string);
+    const activeCard = overview.providers.find((p) => p.isActive)!;
+    const ai = { provider: overview.active, model: activeCard.model, hasApiKey: activeCard.hasApiKey };
+    const aiLive = overview.effective !== 'mock';
 
     return {
       erp: {
@@ -21,12 +30,11 @@ export class IntegrationsStatusController {
         status: erpProvider === 'demo' ? 'VALIDADO (mock real contra Postgres)' : 'ESTRUTURADO, NÃO VALIDADO',
       },
       ai: {
-        provider: aiConfigured === 'anthropic' && hasAnthropicKey ? 'anthropic' : 'mock',
-        mode: aiConfigured === 'anthropic' && hasAnthropicKey ? 'LIVE' : 'DEMO',
-        status:
-          aiConfigured === 'anthropic' && hasAnthropicKey
-            ? 'VALIDADO'
-            : 'MockAIProvider ativo (sem ISPAGENT_ANTHROPIC_API_KEY)',
+        provider: aiLive ? ai.provider : 'mock',
+        mode: aiLive ? 'LIVE' : 'DEMO',
+        status: aiLive
+          ? `VALIDADO (${ai.provider}${ai.model ? `, ${ai.model}` : ''})`
+          : `MockAIProvider ativo — configure em Integrações › IA (provider selecionado: ${ai.provider}${ai.provider !== 'mock' ? ', sem chave' : ''})`,
       },
       pulseisp: {
         enabled: pulseIspEnabled,

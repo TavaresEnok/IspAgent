@@ -32,11 +32,34 @@ export function createBillingTool(erp: ERPAdapter): ToolDefinition<{ contractId:
         { path: 'data.financial.isBlocked', label: 'Bloqueio financeiro', value: financial.isBlocked },
       ];
       if (latest) {
+        const formattedAmount = (latest.amountCents / 100).toLocaleString('pt-BR', {
+          style: 'currency',
+          currency: 'BRL',
+        });
+        const dateObj = new Date(latest.dueDate);
+        const formattedDueDate = !isNaN(dateObj.getTime())
+          ? dateObj.toLocaleDateString('pt-BR', { timeZone: 'UTC' })
+          : latest.dueDate;
+
         facts.push(
-          { path: 'data.latestInvoice.status', label: 'Status da última fatura', value: latest.status },
-          { path: 'data.latestInvoice.dueDate', label: 'Vencimento da última fatura', value: latest.dueDate },
-          { path: 'data.latestInvoice.amountCents', label: 'Valor da última fatura (centavos)', value: latest.amountCents },
+          {
+            path: 'data.latestInvoice.status',
+            label: 'Status da fatura',
+            value: latest.status === 'PAID' ? 'Paga' : latest.status === 'OVERDUE' ? 'Vencida' : 'Em aberto',
+          },
+          { path: 'data.latestInvoice.dueDate', label: 'Vencimento da fatura', value: formattedDueDate },
+          { path: 'data.latestInvoice.formattedAmount', label: 'Valor da fatura', value: formattedAmount },
         );
+
+        if (latest.pdfUrl) {
+          facts.push({ path: 'data.latestInvoice.pdfUrl', label: 'Link do boleto (PDF)', value: latest.pdfUrl });
+        }
+        if (latest.pixCode) {
+          facts.push({ path: 'data.latestInvoice.pixCode', label: 'Código PIX Copia e Cola', value: latest.pixCode });
+        }
+        if (latest.digitableLine) {
+          facts.push({ path: 'data.latestInvoice.digitableLine', label: 'Linha digitável', value: latest.digitableLine });
+        }
       }
 
       return { status: 'OK', data: { financial, latestInvoice: latest }, facts };
@@ -111,7 +134,7 @@ export function createPlanViewTool(erp: ERPAdapter): ToolDefinition<{ customerId
       const active = contracts.filter((c) => c.status === 'ACTIVE');
       const facts = active.map((c) => ({
         path: `data.contracts[${c.id}].planName`,
-        label: `Plano do contrato ${c.id}`,
+        label: `Seu plano`,
         value: c.planName,
       }));
       return { status: 'OK', data: { contracts: active }, facts };

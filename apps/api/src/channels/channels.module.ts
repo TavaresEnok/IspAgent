@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { WebchatController } from './webchat.controller';
 import { ConversationModule } from '../conversation/conversation.module';
 import { AgentModule } from '../agent/agent.module';
+import { PulseISPModule } from '../integrations/pulseisp/pulseisp.module';
+import { ERPModule } from '../integrations/erp/erp.module';
 
 @Module({
-  imports: [ConversationModule, AgentModule],
+  imports: [ConversationModule, AgentModule, PulseISPModule, ERPModule],
   controllers: [WebchatController],
 })
 export class ChannelsModule {}

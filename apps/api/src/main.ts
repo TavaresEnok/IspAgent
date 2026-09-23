@@ -1,4 +1,9 @@
 import 'reflect-metadata';
+import * as dns from 'node:dns';
+
+// Força IPv4 primeiro no Node.js para evitar atrasos e timeouts de DNS no Windows (SGP, Gemini, etc.)
+dns.setDefaultResultOrder('ipv4first');
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';

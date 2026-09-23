@@ -40,6 +40,17 @@ export class PolicyEngineService {
 
     const config = await this.getConfig(tenantId);
 
+    // Modo Somente Leitura: proíbe sumariamente qualquer mutação/criação/O.S. (tier !== READ)
+    if (config.readOnlyMode && spec.tier !== 'READ') {
+      return {
+        ...base,
+        allowed: false,
+        requiresConfirmation: false,
+        reason: `Modo somente leitura ativo pela policy do tenant. Nenhuma alteração, criação ou abertura de O.S. permitida.`,
+        policyVersion: config.policyVersion,
+      };
+    }
+
     if (spec.configFlag && !config[spec.configFlag]) {
       return {
         ...base,

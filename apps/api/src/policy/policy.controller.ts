@@ -6,6 +6,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { POLICY_ACTIONS } from './policy-actions';
 
 class UpdatePolicyConfigDto {
+  @IsOptional() @IsBoolean() readOnlyMode?: boolean;
   @IsOptional() @IsBoolean() canCreateTicket?: boolean;
   @IsOptional() @IsBoolean() canAccessBilling?: boolean;
   @IsOptional() @IsBoolean() canSendInvoice?: boolean;

@@ -48,6 +48,9 @@ model Tenant {
   users            User[]
   customers        Customer[]
   policyConfig     TenantPolicyConfig?
+  aiProviderConfig AiProviderConfig?
+  aiCredentials    AiProviderCredential[]
+  pulseIspConnection PulseIspConnection?
   auditLogs        AuditLog[]
   conversations    Conversation[]
   knowledgeDocs    KnowledgeDocument[]
@@ -90,7 +93,8 @@ model TenantPolicyConfig {
   tenantId                     String  @id
   tenant                       Tenant  @relation(fields: [tenantId], references: [id])
   policyVersion                String  @default("v1")
-  canCreateTicket               Boolean @default(true)
+  readOnlyMode                 Boolean @default(true)
+  canCreateTicket               Boolean @default(false)
   canAccessBilling              Boolean @default(true)
   canSendInvoice                Boolean @default(true)
   canPerformUnlock              Boolean @default(false)
@@ -103,6 +107,46 @@ model TenantPolicyConfig {
   updatedAt                     DateTime @updatedAt
 
   @@map("tenant_policy_configs")
+}
+
+// Provider de IA ATIVO por tenant (tela "IA" do painel). As credenciais de cada provider ficam em
+// `AiProviderCredential` — trocar o provider ativo nunca apaga nem sobrescreve a config dos outros.
+model AiProviderConfig {
+  tenantId  String   @id
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  provider  String   @default("mock")
+  updatedAt DateTime @updatedAt
+
+  @@map("ai_provider_configs")
+}
+
+// Uma linha por (tenant, provider): chave e modelo de cada API configurada. `apiKey` fica em texto
+// puro — aceitável para o ambiente local/DEMO desta sessão (docs/security.md), não é a postura
+// recomendada pra produção (precisaria de um secret manager).
+model AiProviderCredential {
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  provider  String
+  apiKey    String?
+  model     String?
+  updatedAt DateTime @updatedAt
+
+  @@id([tenantId, provider])
+  @@map("ai_provider_credentials")
+}
+
+// Como o ISPAgent se conecta ao PulseISP deste tenant (login de leitura no PulseISP, configurado pela
+// tela "PulseISP" do painel). `password` fica em texto puro — aceitável só no ambiente local/DEMO
+// (docs/security.md); em produção precisaria de um secret manager.
+model PulseIspConnection {
+  tenantId  String   @id
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  baseUrl   String
+  email     String
+  password  String
+  updatedAt DateTime @updatedAt
+
+  @@map("pulseisp_connections")
 }
 
 model Customer {

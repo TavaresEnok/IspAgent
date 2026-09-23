@@ -13,7 +13,7 @@ Cruzamento dos critérios P0 (seção 11) com a evidência real que os comprova 
 | P0.6 | Ação bloqueada pela policy nunca executa | `apps/api/test/tools.spec.ts` (espião no adapter, zero chamadas) + `evidence/policy-block.json` |
 | P0.7 | Cliente ambíguo/não identificado nunca vinculado ao contrato errado | `apps/api/test/identity.spec.ts` + `apps/api/test/conversation.spec.ts` + `apps/api/test/agent.spec.ts` (`cus_demo_g`/`cus_demo_g2`, `cus_demo_h`) |
 | P0.8 | Tenant A não acessa dado do tenant B | `apps/api/test/tenancy.spec.ts` (8/8) + `evidence/tenant-isolation.txt` |
-| P0.9 | Prompt injection (mensagem e documento de KB) não altera privilégio | `apps/api/test/security.spec.ts` (4/4, os 3 payloads da seção 11 + reafirmação ADMIN) + `evidence/prompt-injection.json` |
+| P0.9 | Prompt injection (mensagem e documento de KB) não altera privilégio | `apps/api/test/security.spec.ts` (5/5: os 3 payloads da seção 11 + reafirmação ADMIN + pedido fora de escopo/fibonacci) + `evidence/prompt-injection.json` |
 | P0.10 | `verify.ps1 -Fresh` builda e valida o ambiente do zero | ver resultado no Relatório Final e `artifacts/verification/summary.json` |
 
 ## Como reproduzir
@@ -44,6 +44,25 @@ contra a stack Docker recém-construída — nenhum arquivo aqui é escrito à m
 | `pulseisp.spec.ts` | P0.3, P0.4 |
 | `handoff.spec.ts` | P0.5 |
 | `security.spec.ts` | P0.9 |
+| `upstream-failures.spec.ts` | P1.9, P1.10 (ERP/AI Provider/PulseISP fora do ar — nunca fabrica resultado, sempre escala) |
+| `ai-config.spec.ts` | Tela "IA" do painel — credencial por provider lado a lado, ativar é separado de salvar, chave nunca sai inteira, isolamento entre tenants |
+| `pulseisp-real.spec.ts` | Simulador de cliente real do PulseISP — mapeamento sem inventar valor, espelho sem endereço/documento, identidade por canal, ToolCall LIVE, financeiro/chamado escalam em vez de inventar |
 
-**87 testes, 15 arquivos, 100% verdes** (`pnpm --filter @ispagent/api test`) na última execução desta
+**118 testes, 18 arquivos, 100% verdes** (`pnpm --filter @ispagent/api test`) na última execução desta
 sessão.
+
+## E2E no navegador (Playwright)
+
+`apps/e2e/tests/main-flow.spec.ts` — fluxo principal ponta a ponta contra a stack Docker real (não os
+services isolados, o app inteiro): login → Web Chat → mensagem financeira → resposta real → identidade
+ambígua → handoff → fila → atendente assume → IA para de responder → atendente responde manualmente →
+cliente recebe a resposta. Duas `BrowserContext` simulam cliente e atendente reais e simultâneos.
+
+```powershell
+docker compose up -d --wait      # stack já precisa estar de pé
+cd apps/e2e
+pnpm exec playwright test
+```
+
+2/2 testes verdes, reprodutível (usa o botão "Resetar conversa" pra garantir estado limpo entre
+execuções, em vez de depender de dados que sobraram de uma rodada anterior).
