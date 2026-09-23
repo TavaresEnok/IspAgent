@@ -25,6 +25,11 @@ export interface TenantPolicyConfig {
   maxToolCallsPerTurn: number;
   maxTokensPerTurn: number;
   handoffAfterFailures: number;
+  companyName?: string;
+  assistantName?: string;
+  tone?: string;
+  customRules?: string;
+  supportHours?: string;
 }
 
 export const DEFAULT_TENANT_POLICY_CONFIG: Omit<TenantPolicyConfig, 'policyVersion'> = {
@@ -39,4 +44,8 @@ export const DEFAULT_TENANT_POLICY_CONFIG: Omit<TenantPolicyConfig, 'policyVersi
   maxToolCallsPerTurn: 8,
   maxTokensPerTurn: 6000,
   handoffAfterFailures: 3,
+  companyName: 'Vibe Telecom',
+  assistantName: 'Assistente Virtual',
+  tone: 'caloroso, educado, empático e resolutivo (2 a 4 frases)',
+  supportHours: 'Segunda a Sexta, 08h às 18h',
 };

@@ -23,6 +23,9 @@ const TENANT_SCOPED_MODELS = new Set([
   'AgentRun',
   'ToolCall',
   'Handoff',
+  'CancellationRequest',
+  'CommercialLead',
+  'SatisfactionSurvey',
 ]);
 
 const READ_OPS = new Set([

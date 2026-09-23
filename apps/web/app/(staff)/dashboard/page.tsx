@@ -7,6 +7,10 @@ interface Metrics {
   conversationsToday: number;
   answeredByAiToday: number;
   handedOffToday: number;
+  deflectionRate: number;
+  csat: { average: number; totalSurveys: number };
+  commercialLeads: number;
+  retention: { total: number; retained: number };
   topIntents: Array<{ intent: string; count: number }>;
   ticketsCreated: number;
   toolCalls: { total: number; ok: number; successRate: number | null; blockedByPolicy: number; integrationErrors: number };
@@ -68,6 +72,34 @@ export default function DashboardPage() {
           <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
           <span>SGP Online • <code className="text-slate-300 font-mono">vibetelecom.sgp.net.br</code></span>
         </div>
+      </div>
+
+      {/* Executive Business Metrics Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label="Taxa de Deflexão da IA"
+          value={`${metrics.deflectionRate ?? 100}%`}
+          sub="Atendimentos resolvidos sem transbordo humano"
+          icon="🎯"
+        />
+        <StatCard
+          label="Satisfação do Cliente (CSAT)"
+          value={`${metrics.csat?.average ?? '5.0'} ★`}
+          sub={`${metrics.csat?.totalSurveys ?? 0} avaliações recebidas`}
+          icon="⭐"
+        />
+        <StatCard
+          label="Oportunidades Comerciais"
+          value={metrics.commercialLeads ?? 0}
+          sub="Leads de contratação e upgrade captados"
+          icon="💼"
+        />
+        <StatCard
+          label="Retenção de Cancelamento"
+          value={`${metrics.retention?.retained ?? 0} / ${metrics.retention?.total ?? 0}`}
+          sub="Clientes retidos pelo fluxo inteligente"
+          icon="🧲"
+        />
       </div>
 
       {/* Main Stats Grid */}

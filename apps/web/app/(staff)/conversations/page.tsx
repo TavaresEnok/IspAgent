@@ -30,21 +30,81 @@ const STATUS_LABELS: Record<string, string> = {
 
 export default function ConversationsPage() {
   const [items, setItems] = useState<ConversationRow[] | null>(null);
+  const [status, setStatus] = useState<string>('ALL');
+  const [search, setSearch] = useState<string>('');
 
-  useEffect(() => {
-    apiFetch<{ items: ConversationRow[] }>('/conversations?pageSize=50')
+  const loadConversations = () => {
+    let url = '/conversations?pageSize=50';
+    if (status !== 'ALL') url += `&status=${status}`;
+    if (search.trim()) url += `&search=${encodeURIComponent(search.trim())}`;
+    apiFetch<{ items: ConversationRow[] }>(url)
       .then((r) => setItems(r.items))
       .catch(() => setItems([]));
-  }, []);
+  };
+
+  useEffect(() => {
+    loadConversations();
+  }, [status]);
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    loadConversations();
+  };
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-white tracking-tight">Histórico de Atendimentos</h1>
           <p className="mt-0.5 text-xs text-slate-400">
             Sessões de conversa em andamento e encerradas pelo agente e operadores.
           </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <form onSubmit={handleSearchSubmit} className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Buscar CPF, nome ou ID..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="rounded-lg border border-slate-800 bg-slate-900/90 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none w-52"
+            />
+            <button
+              type="submit"
+              className="rounded-lg bg-cyan-600/80 hover:bg-cyan-500 px-3 py-1.5 text-xs font-medium text-white transition"
+            >
+              Buscar
+            </button>
+          </form>
+
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="rounded-lg border border-slate-800 bg-slate-900/90 px-3 py-1.5 text-xs text-white focus:border-cyan-500 focus:outline-none"
+          >
+            <option value="ALL">Todos os Status</option>
+            <option value="AI_ACTIVE">IA Ativa</option>
+            <option value="HANDOFF_PENDING">Fila de Atendente</option>
+            <option value="HUMAN_ACTIVE">Atendente na Linha</option>
+            <option value="AWAITING_CONFIRMATION">Aguardando Cliente</option>
+            <option value="CLOSED">Encerrada</option>
+          </select>
+
+          {(status !== 'ALL' || search) && (
+            <button
+              onClick={() => {
+                setStatus('ALL');
+                setSearch('');
+                apiFetch<{ items: ConversationRow[] }>('/conversations?pageSize=50')
+                  .then((r) => setItems(r.items))
+                  .catch(() => setItems([]));
+              }}
+              className="text-xs text-slate-400 hover:text-white underline underline-offset-2"
+            >
+              Limpar
+            </button>
+          )}
         </div>
       </div>
 

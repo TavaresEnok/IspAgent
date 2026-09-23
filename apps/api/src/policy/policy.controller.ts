@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
-import { IsBoolean, IsInt, IsOptional, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { currentTenantId } from '../common/tenant-context';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -17,6 +17,11 @@ class UpdatePolicyConfigDto {
   @IsOptional() @IsInt() @Min(1) maxToolCallsPerTurn?: number;
   @IsOptional() @IsInt() @Min(1) maxTokensPerTurn?: number;
   @IsOptional() @IsInt() @Min(1) handoffAfterFailures?: number;
+  @IsOptional() @IsString() companyName?: string;
+  @IsOptional() @IsString() assistantName?: string;
+  @IsOptional() @IsString() tone?: string;
+  @IsOptional() @IsString() customRules?: string;
+  @IsOptional() @IsString() supportHours?: string;
 }
 
 /** Tela "Políticas" (seção 10.1) — policies configuráveis pela UI (P1). */

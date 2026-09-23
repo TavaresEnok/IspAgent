@@ -36,13 +36,24 @@ export class MockAIProvider implements AIProvider {
   readonly model = 'rule-based-v1';
 
   async classifyIntent(message: string): Promise<IntentClassification> {
+    const res = await this.classifyIntents(message);
+    return { intent: res.primary, confidence: res.confidence };
+  }
+
+  async classifyIntents(message: string): Promise<{ intents: Intent[]; primary: Intent; confidence: import('@ispagent/shared').Confidence }> {
     const normalized = message.toLowerCase();
+    const matched: Intent[] = [];
     for (const rule of KEYWORD_RULES) {
       if (rule.keywords.some((kw) => normalized.includes(kw))) {
-        return { intent: rule.intent, confidence: 'MEDIUM' };
+        if (!matched.includes(rule.intent)) {
+          matched.push(rule.intent);
+        }
       }
     }
-    return { intent: 'OUTRO', confidence: 'LOW' };
+    if (matched.length > 0) {
+      return { intents: matched, primary: matched[0], confidence: 'MEDIUM' };
+    }
+    return { intents: ['OUTRO'], primary: 'OUTRO', confidence: 'LOW' };
   }
 
   async composeReply(input: ComposeReplyInput): Promise<string> {
@@ -50,6 +61,9 @@ export class MockAIProvider implements AIProvider {
     const greeting = firstName ? `${firstName}, ` : '';
     const msgLower = (input.customerMessage ?? '').toLowerCase();
     const alreadyRebooted = /(?:j[aá]\s*(?:reiniciei|desliguei|fiz|tirei|resetei|tudo)|mentirosa|essa porra|de novo)/i.test(msgLower);
+
+    const company = input.persona?.companyName?.trim() || 'Vibe Telecom';
+    const assistant = input.persona?.assistantName?.trim() || 'assistente virtual';
 
     if (input.cpfNotFound) {
       return `Não encontrei nenhum cadastro ativo com o documento ou código "${input.cpfNotFound}". Por favor, confira os números digitados ou informe o CPF do titular da assinatura.`;
@@ -59,7 +73,7 @@ export class MockAIProvider implements AIProvider {
     }
 
     if (input.intent === 'OUTRO' && input.facts.length === 0) {
-      return 'Olá! Sou o assistente virtual da Vibe Telecom. Consigo te ajudar com faturas, 2ª via em PDF, código PIX para pagamento, consulta de plano e diagnóstico de conexão. Como posso te ajudar agora?';
+      return `Olá! Sou o ${assistant} da ${company}. Consigo te ajudar com faturas, 2ª via em PDF, código PIX para pagamento, consulta de plano e diagnóstico de conexão. Como posso te ajudar agora?`;
     }
     if (input.toolStatus === 'NOT_FOUND') {
       return `${greeting}não encontrei esse registro no sistema. Pode confirmar os dados novamente?`;
@@ -76,12 +90,34 @@ export class MockAIProvider implements AIProvider {
     }
 
     // Resposta rica e formatada para Faturas / Boletos / PIX
+    const opticalFact = input.facts.find((f) => f.label.includes('óptica') || f.label.includes('fibra') || f.label.includes('sinal') || f.label === 'Sinal óptico na ONT');
     const pdfFact = input.facts.find((f) => f.label.includes('PDF'));
     const pixFact = input.facts.find((f) => f.label.includes('PIX'));
     const amountFact = input.facts.find((f) => f.label.includes('Valor'));
     const dueFact = input.facts.find((f) => f.label.includes('Vencimento'));
     const statusFact = input.facts.find((f) => f.label === 'Status da fatura');
     const digitableFact = input.facts.find((f) => f.label.includes('digitável'));
+
+    // Cenário Multi-Intent: Cliente pediu suporte de rede E segunda via/PIX no mesmo turno
+    if (opticalFact && (pdfFact || pixFact || amountFact)) {
+      let reply = `${greeting}verifiquei a sua conexão e a fibra óptica está recebendo sinal normal da nossa rede.\n\nE sobre a sua fatura, localizei o boleto`;
+      if (amountFact?.value) reply += ` no valor de **${amountFact.value}**`;
+      if (dueFact?.value) reply += ` com vencimento em **${dueFact.value}**`;
+      if (statusFact?.value) reply += ` (${statusFact.value})`;
+      reply += '.\n\n';
+
+      if (pixFact?.value) {
+        reply += `📱 **Código PIX Copia e Cola:**\n\`${pixFact.value}\`\n\n`;
+      }
+      if (pdfFact?.value) {
+        reply += `📄 **Link do Boleto (PDF):**\n${pdfFact.value}\n\n`;
+      }
+      if (digitableFact?.value) {
+        reply += `🔢 **Linha Digitável:**\n\`${digitableFact.value}\`\n\n`;
+      }
+      reply += 'Você pode pagar diretamente pelo aplicativo do seu banco usando o PIX ou o boleto acima.';
+      return reply;
+    }
 
     if (pdfFact || pixFact || amountFact) {
       let reply = `${greeting}localizei a sua fatura`;

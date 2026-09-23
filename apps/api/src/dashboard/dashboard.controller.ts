@@ -26,6 +26,10 @@ export class DashboardController {
       ticketsCreated,
       pulseIspCalls,
       agentRunsToday,
+      surveys,
+      commercialLeadsCount,
+      cancellationsCount,
+      cancellationsRetainedCount,
     ] = await Promise.all([
       this.db.client.conversation.count({ where: { createdAt: { gte: startOfDay } } }),
       this.db.client.agentRun.count({ where: { createdAt: { gte: startOfDay }, outcome: 'ANSWERED' } }),
@@ -42,7 +46,19 @@ export class DashboardController {
         where: { createdAt: { gte: startOfDay } },
         select: { intent: true },
       }),
+      this.db.client.satisfactionSurvey.findMany({
+        select: { score: true },
+      }),
+      this.db.client.commercialLead.count(),
+      this.db.client.cancellationRequest.count(),
+      this.db.client.cancellationRequest.count({ where: { status: 'RETAINED' } }),
     ]);
+
+    const csatTotal = surveys.length;
+    const csatAverage = csatTotal > 0 ? Number((surveys.reduce((acc, s) => acc + s.score, 0) / csatTotal).toFixed(1)) : 5.0;
+    const deflectionRate = conversationsToday > 0
+      ? Number((((conversationsToday - handoffToday) / conversationsToday) * 100).toFixed(1))
+      : 100;
 
     const intentCounts = agentRunsToday.reduce<Record<string, number>>((acc, run) => {
       acc[run.intent] = (acc[run.intent] ?? 0) + 1;
@@ -57,6 +73,16 @@ export class DashboardController {
       conversationsToday,
       answeredByAiToday: answeredToday,
       handedOffToday: handoffToday,
+      deflectionRate,
+      csat: {
+        average: csatAverage,
+        totalSurveys: csatTotal,
+      },
+      commercialLeads: commercialLeadsCount,
+      retention: {
+        total: cancellationsCount,
+        retained: cancellationsRetainedCount,
+      },
       topIntents,
       ticketsCreated,
       toolCalls: {
@@ -69,5 +95,21 @@ export class DashboardController {
       pulseIspDiagnosticsUsed: pulseIspCalls,
       observedAt: new Date().toISOString(),
     };
+  }
+
+  @Get('leads')
+  async listLeads() {
+    return this.db.client.commercialLead.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  @Get('cancellations')
+  async listCancellations() {
+    return this.db.client.cancellationRequest.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
   }
 }

@@ -75,6 +75,18 @@ export default function WebChatPage() {
   const [foundCustomer, setFoundCustomer] = useState<SgpCustomerInfo | null>(null);
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
 
+  // Proactive PON Incident
+  const [incidentAlert, setIncidentAlert] = useState<{ hasIncident: boolean; title?: string; message?: string } | null>(null);
+
+  // CSAT Survey
+  const [showSurvey, setShowSurvey] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [rating, setRating] = useState<number>(5);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [comment, setComment] = useState('');
+  const [surveySubmitted, setSurveySubmitted] = useState(false);
+  const [submittingSurvey, setSubmittingSurvey] = useState(false);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -103,9 +115,47 @@ export default function WebChatPage() {
       const data = await res.json();
       setMessages(data.messages || []);
       setConversationStatus(data.status);
+      setConversationId(data.conversationId);
       setStarted(true);
+
+      // Checa incidentes proativos na rede
+      try {
+        const incRes = await fetch(`${API_URL}/public/webchat/${VIBE_TENANT}/incident-check/${encodeURIComponent(p)}`);
+        if (incRes.ok) {
+          const incData = await incRes.json();
+          if (incData.hasIncident) setIncidentAlert(incData);
+          else setIncidentAlert(null);
+        }
+      } catch {
+        // silent
+      }
     } catch (e: any) {
       setError(e.message || 'Falha ao conectar com o servidor.');
+    }
+  }
+
+  async function submitSatisfactionSurvey() {
+    if (!conversationId || submittingSurvey) return;
+    setSubmittingSurvey(true);
+    try {
+      const res = await fetch(`${API_URL}/public/webchat/${VIBE_TENANT}/survey`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId,
+          rating,
+          comment: comment.trim() || undefined,
+          tags: selectedTags,
+        }),
+      });
+      if (res.ok) {
+        setSurveySubmitted(true);
+        setConversationStatus('CLOSED');
+      }
+    } catch {
+      // ignore
+    } finally {
+      setSubmittingSurvey(false);
     }
   }
 
@@ -371,6 +421,12 @@ export default function WebChatPage() {
             </span>
           )}
           <button
+            onClick={() => setShowSurvey(true)}
+            className="flex items-center gap-1 rounded-lg border border-amber-500/30 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-900/60 transition"
+          >
+            ⭐ <span>Encerrar / Avaliar</span>
+          </button>
+          <button
             onClick={resetConversation}
             disabled={resetting}
             title="Reiniciar conversa"
@@ -380,6 +436,23 @@ export default function WebChatPage() {
           </button>
         </div>
       </header>
+
+      {/* Proactive PON Incident Banner */}
+      {incidentAlert && (
+        <div className="mx-4 mt-3 rounded-xl border border-amber-500/40 bg-amber-950/50 p-3.5 backdrop-blur-md text-amber-200 text-xs shadow-lg flex items-start gap-3">
+          <span className="text-xl shrink-0">⚠️</span>
+          <div className="flex-1">
+            <strong className="block font-semibold text-amber-300">{incidentAlert.title || 'Instabilidade Detectada'}</strong>
+            <p className="mt-0.5 text-amber-200/90 leading-relaxed">{incidentAlert.message}</p>
+          </div>
+          <button
+            onClick={() => setIncidentAlert(null)}
+            className="text-amber-400 hover:text-white text-sm px-1.5 py-0.5"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Messages Scroll Area */}
       <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
@@ -569,6 +642,133 @@ export default function WebChatPage() {
 
         {error && <p className="mt-2 text-center text-xs text-red-400">{error}</p>}
       </footer>
+
+      {/* CSAT Satisfaction Survey Modal */}
+      {showSurvey && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700/80 bg-slate-900/95 p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            {surveySubmitted ? (
+              <div className="text-center py-6">
+                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/20 text-3xl text-emerald-400 border border-emerald-500/30">
+                  ✓
+                </div>
+                <h3 className="text-lg font-bold text-white">Obrigado pelo seu feedback!</h3>
+                <p className="mt-2 text-xs text-slate-400 leading-relaxed">
+                  Sua avaliação foi registrada com sucesso e ajuda nossa equipe a aprimorar constantemente o atendimento da Vibe Telecom.
+                </p>
+                <button
+                  onClick={() => setShowSurvey(false)}
+                  className="mt-6 w-full rounded-xl bg-slate-800 py-2.5 text-xs font-semibold text-white hover:bg-slate-700 transition"
+                >
+                  Fechar
+                </button>
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <span className="text-amber-400 text-lg">⭐</span>
+                    <h3 className="text-sm font-bold text-white">Avaliação do Atendimento</h3>
+                  </div>
+                  <button
+                    onClick={() => setShowSurvey(false)}
+                    className="text-slate-400 hover:text-white text-sm"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="my-5 text-center">
+                  <p className="text-xs text-slate-300 mb-3">Como você avalia a sua experiência hoje?</p>
+                  <div className="flex justify-center gap-2">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        onClick={() => setRating(star)}
+                        className={`text-3xl transition-transform hover:scale-125 ${
+                          star <= rating ? 'text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.5)]' : 'text-slate-700'
+                        }`}
+                      >
+                        ★
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] font-medium text-amber-300">
+                    {rating === 5 ? 'Excelente!' : rating === 4 ? 'Muito bom' : rating === 3 ? 'Regular' : rating === 2 ? 'Ruim' : 'Muito insatisfeito'}
+                  </p>
+                </div>
+
+                {/* Feedback tags */}
+                <div className="mb-4">
+                  <label className="block text-[11px] text-slate-400 mb-2 font-medium">O que você achou?</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      'Rápido e Preciso',
+                      'Resolveu meu problema',
+                      'Atendimento Humanizado',
+                      'Fácil de Usar',
+                      'Precisa Melhorar',
+                    ].map((tag) => {
+                      const active = selectedTags.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => {
+                            setSelectedTags((prev) =>
+                              active ? prev.filter((t) => t !== tag) : [...prev, tag],
+                            );
+                          }}
+                          className={`rounded-full px-2.5 py-1 text-[10px] font-medium transition ${
+                            active
+                              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                              : 'bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600'
+                          }`}
+                        >
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Comment input */}
+                <div className="mb-5">
+                  <label className="block text-[11px] text-slate-400 mb-1 font-medium">
+                    Deixe um comentário adicional (opcional):
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={comment}
+                    onChange={(e) => setComment(e.target.value)}
+                    placeholder="Conte como podemos melhorar ou deixe um elogio..."
+                    className="w-full rounded-xl border border-slate-700/80 bg-slate-950 p-2.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSurvey(false)}
+                    className="flex-1 rounded-xl border border-slate-700 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800 transition"
+                  >
+                    Agora não
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitSatisfactionSurvey}
+                    disabled={submittingSurvey}
+                    className="flex-1 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 py-2.5 text-xs font-bold text-white shadow-lg shadow-amber-950/40 hover:brightness-110 active:scale-95 disabled:opacity-50 transition"
+                  >
+                    {submittingSurvey ? 'Enviando...' : 'Enviar Avaliação'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

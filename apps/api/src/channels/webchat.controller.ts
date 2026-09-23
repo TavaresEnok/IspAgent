@@ -219,6 +219,79 @@ export class WebchatController {
     });
   }
 
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post(':tenantId/survey')
+  async submitSurvey(
+    @Param('tenantId') tenantId: string,
+    @Body() body: { conversationId: string; rating: number; comment?: string; tags?: string[] },
+  ) {
+    await this.requireTenant(tenantId);
+    if (!body?.conversationId || typeof body?.rating !== 'number') {
+      throw new BadRequestException('conversationId e rating são obrigatórios.');
+    }
+    const rating = Math.max(1, Math.min(5, Math.round(body.rating)));
+
+    return runWithTenant(tenantId, async () => {
+      const conv = await this.db.client.conversation.findUnique({
+        where: { id: body.conversationId },
+      });
+      if (!conv) throw new NotFoundException('Conversa não encontrada.');
+
+      const survey = await this.db.client.satisfactionSurvey.create({
+        data: {
+          tenantId,
+          conversationId: conv.id,
+          score: rating,
+          feedback: body.comment?.trim() || null,
+        },
+      });
+
+      if (conv.status !== 'CLOSED') {
+        await this.db.client.conversation.update({
+          where: { id: conv.id },
+          data: { status: 'CLOSED' },
+        });
+      }
+
+      return { success: true, surveyId: survey.id };
+    });
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get(':tenantId/incident-check/:channelUserId')
+  async checkIncident(
+    @Param('tenantId') tenantId: string,
+    @Param('channelUserId') channelUserId: string,
+  ) {
+    await this.requireTenant(tenantId);
+    return runWithTenant(tenantId, async () => {
+      const conv = await this.db.client.conversation.findFirst({
+        where: { channel: 'WEBCHAT', channelUserId },
+        include: { customer: { include: { contracts: true } } },
+      });
+
+      if (!conv?.customer?.contracts?.length) {
+        return { hasIncident: false };
+      }
+
+      const contract = conv.customer.contracts.find((c: any) => c.status === 'ACTIVE') || conv.customer.contracts[0];
+      const status = await this.erp.getServiceStatus(contract.id);
+
+      if (status && !status.online) {
+        return {
+          hasIncident: true,
+          severity: 'warning',
+          title: 'Aviso de Manutenção / Sinal Indisponível',
+          message: 'Detectamos que a sua conexão PON/fibra está sem sinal no momento. Nossos técnicos já estão cientes e atuando na normalização.',
+        };
+      }
+
+      return { hasIncident: false };
+    });
+  }
+
   private async requireTenant(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
     if (!tenant) throw new NotFoundException('Tenant não encontrado');

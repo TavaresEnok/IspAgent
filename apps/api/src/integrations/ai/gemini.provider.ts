@@ -2,7 +2,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { GoogleGenerativeAI, GenerativeModel, GenerateContentRequest } from '@google/generative-ai';
 import { Confidence, Intent } from '@ispagent/shared';
 import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
-import { buildReplyUserMessage, REPLY_SYSTEM_PROMPT } from './reply-prompt';
+import { buildReplyUserMessage, buildReplySystemPrompt, REPLY_SYSTEM_PROMPT } from './reply-prompt';
 
 const VALID_INTENTS: Intent[] = [
   'SUPORTE_INTERNET', 'SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'FINANCEIRO', 'SEGUNDA_VIA',
@@ -145,6 +145,27 @@ export class GeminiProvider implements AIProvider {
     }
   }
 
+  async classifyIntents(message: string): Promise<{ intents: Intent[]; primary: Intent; confidence: Confidence }> {
+    const trimmed = message.trim();
+    const lower = trimmed.toLowerCase();
+    const matchedIntents: Intent[] = [];
+
+    for (const rule of KEYWORD_RULES) {
+      if (rule.keywords.some((kw) => lower.includes(kw))) {
+        if (!matchedIntents.includes(rule.intent)) {
+          matchedIntents.push(rule.intent);
+        }
+      }
+    }
+
+    if (matchedIntents.length > 0) {
+      return { intents: matchedIntents, primary: matchedIntents[0], confidence: 'HIGH' };
+    }
+
+    const single = await this.classifyIntent(message);
+    return { intents: [single.intent], primary: single.intent, confidence: single.confidence };
+  }
+
   async composeReply(input: ComposeReplyInput): Promise<string> {
     // Fast-path: respostas estruturadas de solicitação de identificação (0ms, sem gastar LLM)
     if (input.cpfNotFound) {
@@ -171,8 +192,7 @@ export class GeminiProvider implements AIProvider {
           role: 'system',
           parts: [
             {
-              text:
-                REPLY_SYSTEM_PROMPT,
+              text: buildReplySystemPrompt(input.persona),
             },
           ],
         },

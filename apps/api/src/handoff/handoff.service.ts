@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { HandoffSummary } from '@ispagent/shared';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { currentTenantId } from '../common/tenant-context';
+import { RealtimeEventsService } from '../events/events.service';
 
 /**
  * Fila humana e transições AI → HUMAN → AI (seção 5.4). Quando o humano assume, a IA para de responder
@@ -10,7 +11,10 @@ import { currentTenantId } from '../common/tenant-context';
  */
 @Injectable()
 export class HandoffService {
-  constructor(private readonly db: TenantPrismaService) {}
+  constructor(
+    private readonly db: TenantPrismaService,
+    private readonly events: RealtimeEventsService,
+  ) {}
 
   private requireTenantId(): string {
     const tenantId = currentTenantId();
@@ -56,6 +60,17 @@ export class HandoffService {
       },
     });
 
+    this.events.emit({
+      tenantId,
+      type: 'NEW_HANDOFF',
+      data: {
+        handoffId: handoff.id,
+        conversationId,
+        reason,
+        summary,
+      },
+    });
+
     return handoff;
   }
 
@@ -80,6 +95,16 @@ export class HandoffService {
     await this.db.client.conversation.update({
       where: { id: handoff.conversationId },
       data: { status: 'HUMAN_ACTIVE' },
+    });
+
+    this.events.emit({
+      tenantId,
+      type: 'STATUS_CHANGED',
+      data: {
+        conversationId: handoff.conversationId,
+        status: 'HUMAN_ACTIVE',
+        assumedByUserId: userId,
+      },
     });
 
     await this.db.client.auditLog.create({

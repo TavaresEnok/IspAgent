@@ -26,6 +26,19 @@ export interface ComposeReplyInput {
   justIdentified?: boolean;
   /** Se um termo/CPF foi digitado mas não foi encontrado no cadastro. */
   cpfNotFound?: string | null;
+  /** Persona configurada por tenant. */
+  persona?: {
+    companyName?: string;
+    assistantName?: string;
+    tone?: string;
+    customRules?: string;
+    supportHours?: string;
+    canCreateTicket?: boolean;
+  };
+  /** Resumo histórico de conversas longas. */
+  summary?: string | null;
+  /** Múltiplas intenções identificadas neste turno. */
+  intents?: Intent[];
 }
 
 /**
@@ -39,5 +52,6 @@ export interface AIProvider {
   readonly model: string;
 
   classifyIntent(message: string): Promise<IntentClassification>;
+  classifyIntents?(message: string): Promise<{ intents: Intent[]; primary: Intent; confidence: Confidence }>;
   composeReply(input: ComposeReplyInput): Promise<string>;
 }

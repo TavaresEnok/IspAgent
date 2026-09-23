@@ -17,6 +17,11 @@ interface PolicyConfig {
   maxToolCallsPerTurn: number;
   maxTokensPerTurn: number;
   handoffAfterFailures: number;
+  companyName?: string;
+  assistantName?: string;
+  tone?: string;
+  customRules?: string;
+  supportHours?: string;
 }
 
 const BOOL_FIELDS: Array<{ key: keyof PolicyConfig; label: string; desc: string }> = [
@@ -33,10 +38,43 @@ export default function PoliciesPage() {
   const [config, setConfig] = useState<PolicyConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [personaForm, setPersonaForm] = useState({
+    companyName: '',
+    assistantName: '',
+    tone: '',
+    customRules: '',
+    supportHours: '',
+  });
 
   useEffect(() => {
-    apiFetch<PolicyConfig>('/policy').then(setConfig).catch(() => null);
+    apiFetch<PolicyConfig>('/policy').then((c) => {
+      if (c) {
+        setConfig(c);
+        setPersonaForm({
+          companyName: c.companyName || 'Vibe Telecom',
+          assistantName: c.assistantName || 'Assistente Virtual',
+          tone: c.tone || 'caloroso, educado, empático e resolutivo (2 a 4 frases)',
+          customRules: c.customRules || '',
+          supportHours: c.supportHours || 'Segunda a Sexta, 08h às 18h',
+        });
+      }
+    }).catch(() => null);
   }, []);
+
+  async function savePersona() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await apiFetch<PolicyConfig>('/policy', {
+        method: 'PATCH',
+        body: JSON.stringify(personaForm),
+      });
+      if (res) setConfig(res);
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function toggle(key: keyof PolicyConfig) {
     if (!config) return;
@@ -101,6 +139,84 @@ export default function PoliciesPage() {
             className="h-6 w-6 rounded border-slate-700 bg-slate-950 text-amber-500 focus:ring-amber-500/30 focus:ring-offset-0 cursor-pointer"
           />
         </label>
+      </div>
+
+      {/* Persona e Atendimento do Provedor */}
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6 backdrop-blur-md">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <span>🎭</span> Persona & Tom de Voz da IA
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Personalize o nome da empresa, o nome do assistente virtual, o tom da conversa e as regras específicas do seu provedor.
+            </p>
+          </div>
+          <button
+            onClick={savePersona}
+            disabled={saving}
+            className="rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-md shadow-cyan-950 hover:brightness-110 active:scale-95 transition disabled:opacity-50"
+          >
+            {saving ? 'Salvando...' : 'Salvar Persona'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+          <div>
+            <label className="block text-slate-400 font-medium mb-1">Nome da Empresa / Provedor</label>
+            <input
+              type="text"
+              value={personaForm.companyName}
+              onChange={(e) => setPersonaForm({ ...personaForm, companyName: e.target.value })}
+              placeholder="Ex: Vibe Telecom"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-400 font-medium mb-1">Nome do Assistente Virtual</label>
+            <input
+              type="text"
+              value={personaForm.assistantName}
+              onChange={(e) => setPersonaForm({ ...personaForm, assistantName: e.target.value })}
+              placeholder="Ex: Ana, VibeBot, Assistente Virtual"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-400 font-medium mb-1">Horário de Atendimento Humano</label>
+            <input
+              type="text"
+              value={personaForm.supportHours}
+              onChange={(e) => setPersonaForm({ ...personaForm, supportHours: e.target.value })}
+              placeholder="Ex: Segunda a Sexta, 08h às 18h"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-slate-400 font-medium mb-1">Tom de Voz</label>
+            <input
+              type="text"
+              value={personaForm.tone}
+              onChange={(e) => setPersonaForm({ ...personaForm, tone: e.target.value })}
+              placeholder="Ex: caloroso, educado, empático e resolutivo (2 a 4 frases)"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className="block text-slate-400 font-medium mb-1">Regras Específicas / Políticas Customizadas do Provedor</label>
+            <textarea
+              rows={3}
+              value={personaForm.customRules}
+              onChange={(e) => setPersonaForm({ ...personaForm, customRules: e.target.value })}
+              placeholder="Ex: Se o cliente perguntar sobre planos corporativos, oriente a ligar no 0800. Para cancelamento, informar que não há multa após 12 meses."
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+            />
+          </div>
+        </div>
       </div>
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6 backdrop-blur-md">

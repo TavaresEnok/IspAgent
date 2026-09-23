@@ -180,15 +180,24 @@ export class AgentOrchestratorService {
     // uma intenção plausível — usamos 'OUTRO'/'LOW' só como valor de schema, marcamos `aiFailed` e, mais
     // abaixo, pulamos qualquer seleção de ferramenta baseada nessa intenção não confiável.
     let classification: { intent: Intent; confidence: 'HIGH' | 'MEDIUM' | 'LOW' };
+    let detectedIntents: Intent[] = [];
     let aiFailed = false;
     try {
-      classification = await ai.classifyIntent(customerMessage);
+      if (typeof ai.classifyIntents === 'function') {
+        const multi = await ai.classifyIntents(customerMessage);
+        classification = { intent: multi.primary, confidence: multi.confidence };
+        detectedIntents = multi.intents;
+      } else {
+        classification = await ai.classifyIntent(customerMessage);
+        detectedIntents = [classification.intent];
+      }
     } catch (err) {
       this.logger.error(
         `classifyIntent (${ai.name}) falhou — escalando para humano sem adivinhar intenção: ` +
           `${err instanceof Error ? err.message : String(err)}`,
       );
       classification = { intent: 'OUTRO', confidence: 'LOW' };
+      detectedIntents = ['OUTRO'];
       aiFailed = true;
     }
 
@@ -365,9 +374,178 @@ export class AgentOrchestratorService {
     const accountAvailable = Boolean(identifiedContractId && identifiedCustomerId);
     const realPulseContract = isPulseId(identifiedContractId);
 
+    // 4. Fluxo de Retenção de Cancelamento
+    if (classification.intent === 'CANCELAMENTO') {
+      const company = tenantPolicy?.companyName || 'Vibe Telecom';
+      const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
+      const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
+
+      // Verifica se o cliente já mencionou motivo financeiro/preço
+      if (/(?:caro|preço|preco|valor|aumentou|concorr[eê]ncia|desconto)/i.test(customerMessage)) {
+        await this.db.client.cancellationRequest.create({
+          data: {
+            tenantId,
+            conversationId,
+            customerId: identifiedCustomerId,
+            contractId: identifiedContractId,
+            reason: customerMessage,
+            discountOffered: true,
+            status: 'OPEN',
+          },
+        });
+
+        const replyText = `${greeting}compreendo perfeitamente o seu ponto. Você é um cliente muito especial para a ${company} e não queremos que você fique desconectado. Gostaria de te oferecer uma condição exclusiva de desconto especial na sua mensalidade para mantermos o seu plano ativo. Deseja que eu aplique essa condição para você?`;
+        await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
+
+        await this.db.client.agentRun.update({
+          where: { id: agentRun.id },
+          data: { outcome: 'ANSWERED' },
+        });
+
+        return {
+          agentRunId: agentRun.id,
+          tenantId,
+          conversationId,
+          intent: 'CANCELAMENTO',
+          intentConfidence: 'HIGH',
+          identity: null,
+          toolCalls: [],
+          policyDecisions: [],
+          claims: [],
+          outcome: 'ANSWERED',
+          promptVersion: PROMPT_VERSION,
+          model: ai.model,
+          mode: ai.mode,
+        };
+      }
+
+      // Se ainda não especificou motivo
+      const hasAnyReason = /(?:mudan[çc]a|mudei|endere[çc]o|ruim|lenta|inst[aá]vel|n[aã]o uso|viagem|vender)/i.test(customerMessage);
+      if (!hasAnyReason) {
+        const replyText = `${greeting}lamento muito pela sua intenção de cancelamento. Para que eu possa te orientar da melhor forma, você poderia me informar o motivo principal? (Por exemplo: valor da fatura, mudança de endereço ou instabilidade no sinal?)`;
+        await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
+
+        await this.db.client.agentRun.update({
+          where: { id: agentRun.id },
+          data: { outcome: 'ANSWERED' },
+        });
+
+        return {
+          agentRunId: agentRun.id,
+          tenantId,
+          conversationId,
+          intent: 'CANCELAMENTO',
+          intentConfidence: 'HIGH',
+          identity: null,
+          toolCalls: [],
+          policyDecisions: [],
+          claims: [],
+          outcome: 'ANSWERED',
+          promptVersion: PROMPT_VERSION,
+          model: ai.model,
+          mode: ai.mode,
+        };
+      }
+
+      // Motivo informado e não é negociável -> registrar e transferir para retenção humana
+      await this.db.client.cancellationRequest.create({
+        data: {
+          tenantId,
+          conversationId,
+          customerId: identifiedCustomerId,
+          contractId: identifiedContractId,
+          reason: customerMessage,
+          status: 'TRANSFERRED',
+        },
+      });
+
+      await this.handoff.createHandoff(conversationId, 'Cancelamento de assinatura solicitado', {
+        intent: 'CANCELAMENTO',
+        reason: 'Cliente solicitou cancelamento da assinatura.',
+        reportedProblem: customerMessage,
+        customerId: identifiedCustomerId,
+        contractId: identifiedContractId,
+        toolsConsulted: [],
+        actionsTaken: [],
+        actionsFailed: [],
+        suggestedNextAction: 'Equipe de retenção humana para conclusão do cancelamento.',
+      });
+
+      const replyText = `${greeting}compreendo perfeitamente. Registrei os detalhes do seu pedido e estou transferindo agora para a nossa equipe especializada de retenção humana para te auxiliar no processo. Por favor, aguarde um instante.`;
+      await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
+
+      await this.db.client.agentRun.update({
+        where: { id: agentRun.id },
+        data: { outcome: 'HANDOFF' },
+      });
+
+      return {
+        agentRunId: agentRun.id,
+        tenantId,
+        conversationId,
+        intent: 'CANCELAMENTO',
+        intentConfidence: 'HIGH',
+        identity: null,
+        toolCalls: [],
+        policyDecisions: [],
+        claims: [],
+        outcome: 'HANDOFF',
+        promptVersion: PROMPT_VERSION,
+        model: ai.model,
+        mode: ai.mode,
+      };
+    }
+
+    // 5. Fluxo Comercial de Contratação & Upgrade (Captura de Lead)
+    if (classification.intent === 'CONTRATACAO' || classification.intent === 'UPGRADE') {
+      const company = tenantPolicy?.companyName || 'Vibe Telecom';
+      const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
+      const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
+
+      await this.db.client.commercialLead.create({
+        data: {
+          tenantId,
+          name: customerName || 'Interessado via Chat',
+          phone: conversationRecord.channelUserId || 'Sem telefone',
+          desiredPlan: classification.intent === 'UPGRADE' ? 'Upgrade de Velocidade' : 'Novo Plano Fibra Óptica',
+          originChannel: 'WEBCHAT',
+          status: 'NEW',
+          notes: customerMessage,
+        },
+      });
+
+      const replyText = `${greeting}ótima escolha! Já registrei o seu interesse com a nossa equipe comercial da ${company}. Um consultor vai entrar em contato com você pelo telefone/WhatsApp em breve com as melhores promoções disponíveis na sua região para finalizar o seu pedido! Se precisar de mais alguma informação sobre planos ou faturas, estou à disposição.`;
+      await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
+
+      await this.db.client.agentRun.update({
+        where: { id: agentRun.id },
+        data: { outcome: 'ACTION_EXECUTED' },
+      });
+
+      return {
+        agentRunId: agentRun.id,
+        tenantId,
+        conversationId,
+        intent: classification.intent,
+        intentConfidence: 'HIGH',
+        identity: null,
+        toolCalls: [],
+        policyDecisions: [],
+        claims: [],
+        outcome: 'ACTION_EXECUTED',
+        promptVersion: PROMPT_VERSION,
+        model: ai.model,
+        mode: ai.mode,
+      };
+    }
+
+    const hasNetwork = detectedIntents.some((it) => NETWORK_INTENTS.includes(it));
+    const hasAccount = detectedIntents.some((it) => ACCOUNT_INTENTS.includes(it));
     const needsAccountOrNetwork =
       ACCOUNT_INTENTS.includes(classification.intent) ||
-      NETWORK_INTENTS.includes(classification.intent);
+      NETWORK_INTENTS.includes(classification.intent) ||
+      hasNetwork ||
+      hasAccount;
 
     const recentAgentReplies = await this.db.client.message.findMany({
       where: { conversationId, role: 'AGENT' },
@@ -387,6 +565,29 @@ export class AgentOrchestratorService {
     } else if (needsCpf) {
       // Cliente ainda não identificado: não faz busca de KB inútil nem gera handoff.
       // O bot vai solicitar ou reiterar a necessidade do CPF para poder dar prosseguimento.
+    } else if (!aiFailed && accountAvailable && hasNetwork && hasAccount) {
+      // Cenário Multi-Intent: executa tanto diagnóstico de rede quanto consulta de fatura/conta
+      const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
+      const decisionPulse = await this.policy.evaluate(pulseTool.action);
+      policyDecisions.push(decisionPulse);
+      toolResults.push(
+        await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+      );
+
+      const accountIntent = detectedIntents.find((it) => ACCOUNT_INTENTS.includes(it)) || 'SEGUNDA_VIA';
+      const dispatch = this.selectAccountTool(accountIntent);
+      const decisionAccount = await this.policy.evaluate(dispatch.action);
+      policyDecisions.push(decisionAccount);
+      if (!(realPulseContract && dispatch.kind !== 'plan')) {
+        const toolResult = await this.executeAccountTool(
+          dispatch.kind,
+          agentRun.id,
+          identifiedContractId as string,
+          identifiedCustomerId as string,
+          customerMessage,
+        );
+        toolResults.push(toolResult);
+      }
     } else if (!aiFailed && accountAvailable && ACCOUNT_INTENTS.includes(classification.intent)) {
       const dispatch = this.selectAccountTool(classification.intent);
       const decision = await this.policy.evaluate(dispatch.action);
@@ -472,10 +673,19 @@ export class AgentOrchestratorService {
       replyText = OUT_OF_SCOPE_GUIDANCE_MESSAGE;
     } else {
       try {
+        const allFacts = toolResults
+          .filter((r) => r.status === 'OK')
+          .flatMap((r) => r.facts.map((f) => ({ label: f.label, value: f.value })));
+
+        const conv = await this.db.client.conversation.findUnique({
+          where: { id: conversationId },
+          select: { summary: true },
+        });
+
         replyText = await ai.composeReply({
           intent: classification.intent,
           customerName: customerName,
-          facts: primaryResult?.status === 'OK' ? primaryResult.facts.map((f) => ({ label: f.label, value: f.value })) : [],
+          facts: allFacts,
           toolStatus: primaryResult ? primaryResult.status : null,
           followUp,
           customerMessage,
@@ -483,6 +693,16 @@ export class AgentOrchestratorService {
           needsCpf,
           justIdentified,
           cpfNotFound: attemptedTerm,
+          persona: {
+            companyName: tenantPolicy?.companyName || 'Vibe Telecom',
+            assistantName: tenantPolicy?.assistantName || 'Assistente Virtual',
+            tone: tenantPolicy?.tone || 'caloroso, educado, empático e resolutivo (2 a 4 frases)',
+            customRules: tenantPolicy?.customRules || undefined,
+            supportHours: tenantPolicy?.supportHours || 'Segunda a Sexta, 08h às 18h',
+            canCreateTicket,
+          },
+          summary: conv?.summary,
+          intents: detectedIntents,
         });
       } catch (err) {
         this.logger.error(

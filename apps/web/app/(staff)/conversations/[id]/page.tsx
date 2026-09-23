@@ -58,6 +58,16 @@ export default function ConversationDetailPage() {
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
 
+  const [copilot, setCopilot] = useState<{ suggestion: string; handoffReason: string } | null>(null);
+
+  useEffect(() => {
+    if (conv?.status === 'HUMAN_ACTIVE' || conv?.status === 'HANDOFF_PENDING') {
+      apiFetch<{ suggestion: string; handoffReason: string }>(`/conversations/${params.id}/copilot-suggestion`)
+        .then(setCopilot)
+        .catch(() => null);
+    }
+  }, [conv?.status, params.id]);
+
   function load() {
     apiFetch<ConversationDetail>(`/conversations/${params.id}`).then(setConv).catch((e) => setError(e.message));
   }
@@ -116,6 +126,25 @@ export default function ConversationDetailPage() {
             ))}
           </div>
 
+          {/* Sugestão Inteligente do Copiloto IA */}
+          {copilot && (
+            <div className="mt-3 rounded-xl border border-purple-200 bg-purple-50/80 p-3 text-xs">
+              <div className="flex items-center justify-between font-semibold text-purple-900 mb-1.5">
+                <span className="flex items-center gap-1.5">
+                  <span>✨</span> Sugestão do Copiloto IA
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setReply(copilot.suggestion)}
+                  className="rounded bg-purple-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-purple-700 active:scale-95 transition shadow-sm"
+                >
+                  Usar esta resposta ↵
+                </button>
+              </div>
+              <p className="text-purple-800 italic leading-relaxed">"{copilot.suggestion}"</p>
+            </div>
+          )}
+
           {conv.status === 'HUMAN_ACTIVE' ? (
             <div className="mt-3 flex gap-2 border-t border-slate-100 pt-3">
               <input
@@ -123,12 +152,12 @@ export default function ConversationDetailPage() {
                 onChange={(e) => setReply(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && sendReply()}
                 placeholder="Responder como atendente..."
-                className="flex-1 rounded border border-slate-300 px-3 py-2 text-sm"
+                className="flex-1 rounded border border-slate-300 px-3 py-2 text-sm focus:border-purple-500 focus:outline-none"
               />
               <button
                 onClick={sendReply}
                 disabled={sending}
-                className="rounded bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                className="rounded bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition"
               >
                 Enviar
               </button>

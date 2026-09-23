@@ -23,21 +23,75 @@ export class ConversationsController {
   ) {}
 
   @Get()
-  async list(@Query('page') page = '1', @Query('pageSize') pageSize = '20') {
+  async list(
+    @Query('page') page = '1',
+    @Query('pageSize') pageSize = '20',
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
     const take = Math.min(Number(pageSize) || 20, 100);
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
 
+    const where: any = {};
+    if (status && status !== 'ALL') {
+      where.status = status;
+    }
+    if (search && search.trim()) {
+      const q = search.trim();
+      where.OR = [
+        { channelUserId: { contains: q } },
+        { customer: { name: { contains: q, mode: 'insensitive' } } },
+        { customer: { document: { contains: q } } },
+      ];
+    }
+
     const [items, total] = await Promise.all([
       this.db.client.conversation.findMany({
+        where,
         orderBy: { updatedAt: 'desc' },
         take,
         skip,
-        include: { customer: { select: { id: true, name: true } } },
+        include: { customer: { select: { id: true, name: true, document: true } } },
       }),
-      this.db.client.conversation.count(),
+      this.db.client.conversation.count({ where }),
     ]);
 
     return { items, total, page: Number(page) || 1, pageSize: take };
+  }
+
+  @Get(':id/copilot-suggestion')
+  async copilotSuggestion(@Param('id') id: string) {
+    const conversation = await this.db.client.conversation.findUnique({
+      where: { id },
+      include: {
+        customer: { select: { id: true, name: true, document: true } },
+        messages: { orderBy: { createdAt: 'desc' }, take: 10 },
+        handoffs: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!conversation) throw new NotFoundException('Conversa não encontrada');
+
+    const customerName = conversation.customer?.name ? conversation.customer.name.trim().split(/\s+/)[0] : '';
+    const greeting = customerName ? `Olá, ${customerName}! ` : 'Olá! ';
+    const lastCustomerMsg = conversation.messages.find((m) => m.role === 'CUSTOMER')?.content || '';
+    const handoffReason = conversation.handoffs[0]?.reason || 'Atendimento transferido para suporte humano.';
+
+    let suggestion = `${greeting}Aqui é do suporte ao cliente. Estou assumindo o seu atendimento agora. `;
+    if (/lenta|lentid[aã]o|ruim|sinal|wifi/i.test(lastCustomerMsg)) {
+      suggestion += 'Vi que você estava verificando sua conexão. Nosso diagnóstico de rede mostrou sinal óptico normal na fibra, mas vamos realizar juntos alguns testes no seu roteador para normalizar agora mesmo.';
+    } else if (/pix|boleto|fatura|pdf/i.test(lastCustomerMsg)) {
+      suggestion += 'Vi que você precisa da sua fatura ou código de pagamento. Já estou com os seus dados em tela para te auxiliar de imediato.';
+    } else if (/cancelar|cancelamento/i.test(lastCustomerMsg)) {
+      suggestion += 'Lamento saber da sua intenção de cancelamento. Gostaria muito de entender o que aconteceu e ver como podemos aplicar uma condição especial para você continuar com a gente.';
+    } else {
+      suggestion += 'Como posso te auxiliar a resolver essa questão hoje?';
+    }
+
+    return {
+      suggestion,
+      handoffReason,
+      lastCustomerMessage: lastCustomerMsg,
+    };
   }
 
   @Get(':id')

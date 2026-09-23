@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { getAccessToken, clearSession, apiFetch } from '@/lib/api';
+import { getAccessToken, clearSession, apiFetch, API_URL } from '@/lib/api';
 
 interface Me {
   userId: string;
@@ -16,8 +16,10 @@ const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: '📊' },
   { href: '/conversations', label: 'Conversas', icon: '💬' },
   { href: '/handoff', label: 'Fila Humana', icon: '👤' },
+  { href: '/leads', label: 'Leads & Retenção', icon: '💼' },
   { href: '/customers', label: 'Clientes', icon: '👥' },
   { href: '/sgp', label: 'SGP Telecom', icon: '⚡' },
+  { href: '/playground', label: 'Laboratório IA', icon: '🧪' },
   { href: '/knowledge', label: 'Base de Conhecimento', icon: '📚' },
   { href: '/integrations', label: 'Integrações', icon: '🔌' },
   { href: '/ai-settings', label: 'Configurações IA', icon: '🤖' },
@@ -27,11 +29,30 @@ const NAV = [
   { href: '/audit', label: 'Auditoria', icon: '📜' },
 ];
 
+function playNotificationChime() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.4);
+  } catch {}
+}
+
 export default function StaffLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [me, setMe] = useState<Me | null>(null);
   const [checked, setChecked] = useState(false);
+  const [pendingHandoffs, setPendingHandoffs] = useState<number>(0);
+  const [realtimeAlert, setRealtimeAlert] = useState<string | null>(null);
 
   useEffect(() => {
     if (!getAccessToken()) {
@@ -42,6 +63,32 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
       .then(setMe)
       .catch(() => router.replace('/login'))
       .finally(() => setChecked(true));
+
+    // Busca contagem inicial de handoffs
+    apiFetch<any[]>('/handoff/queue')
+      .then((q) => setPendingHandoffs(q.length))
+      .catch(() => {});
+
+    // Conexão SSE em tempo real
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(`${API_URL}/events/stream?tenantId=tnt_vibe`);
+      es.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload?.type === 'NEW_HANDOFF') {
+            setPendingHandoffs((prev) => prev + 1);
+            playNotificationChime();
+            setRealtimeAlert('🔔 Novo cliente entrou na Fila de Atendente Humano!');
+            setTimeout(() => setRealtimeAlert(null), 5000);
+          }
+        } catch {}
+      };
+    } catch {}
+
+    return () => {
+      es?.close();
+    };
   }, [router]);
 
   if (!checked) {
@@ -90,7 +137,12 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
                   }`}
                 >
                   <span className="text-sm">{item.icon}</span>
-                  <span>{item.label}</span>
+                  <span className="flex-1">{item.label}</span>
+                  {item.href === '/handoff' && pendingHandoffs > 0 && (
+                    <span className="rounded-full bg-orange-500/20 border border-orange-500/40 text-orange-400 text-[10px] font-bold px-2 py-0.5 animate-pulse">
+                      {pendingHandoffs}
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -138,7 +190,23 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto bg-slate-950 p-6 md:p-8">
-        <div className="mx-auto max-w-7xl">{children}</div>
+        <div className="mx-auto max-w-7xl">
+          {realtimeAlert && (
+            <div className="mb-6 rounded-2xl border border-orange-500/40 bg-orange-950/80 p-4 text-xs text-orange-200 shadow-xl flex items-center justify-between backdrop-blur-md animate-in slide-in-from-top-4 duration-300">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">🔔</span>
+                <span className="font-semibold">{realtimeAlert}</span>
+              </div>
+              <Link
+                href="/handoff"
+                className="rounded-xl bg-orange-500 hover:bg-orange-400 px-3.5 py-1.5 text-xs font-bold text-slate-950 shadow-md transition"
+              >
+                Atender Cliente Agora →
+              </Link>
+            </div>
+          )}
+          {children}
+        </div>
       </main>
     </div>
   );
