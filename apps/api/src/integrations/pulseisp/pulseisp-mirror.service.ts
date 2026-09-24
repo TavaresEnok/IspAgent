@@ -27,7 +27,7 @@ const CONTRACT_STATUS: Record<string, ContractStatus> = {
 export class PulseIspMirrorService {
   constructor(private readonly db: TenantPrismaService) {}
 
-  async upsertFromCustomer360(tenantId: string, c360: PulseCustomer360): Promise<SimulatedCustomer> {
+  async upsertFromCustomer360(tenantId: string, c360: PulseCustomer360, opts?: { document?: string }): Promise<SimulatedCustomer> {
     const customer = c360.customer;
     const contract = c360.contract;
     if (!customer?.id) throw new BadRequestException('Resposta do PulseISP sem cliente.');
@@ -41,6 +41,7 @@ export class PulseIspMirrorService {
     const planId = `pulse_plan_${contract.plan.id}`;
     const channelUserId = `pulse:${customer.id}`;
     const name = customer.name ?? 'Cliente PulseISP';
+    const document = opts?.document ?? '(não copiado do PulseISP)';
 
     await this.db.client.plan.upsert({
       where: { id: planId },
@@ -66,11 +67,11 @@ export class PulseIspMirrorService {
         id: customerId,
         tenantId,
         name,
-        document: '(não copiado do PulseISP)',
+        document,
         phones: [channelUserId],
         externalId: customer.externalId ?? customer.id,
       },
-      update: { name, phones: [channelUserId], externalId: customer.externalId ?? customer.id },
+      update: { name, document, phones: [channelUserId], externalId: customer.externalId ?? customer.id },
     });
 
     await this.db.client.contract.upsert({

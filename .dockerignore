@@ -3,5 +3,12 @@
 **/.next
 **/coverage
 **/*.tsbuildinfo
+**/test-results
+**/playwright-report
 .git
+.claude
 artifacts
+# Segredos nunca entram no contexto de build (nem, por consequência, em nenhuma camada de imagem).
+.env
+.env.*
+!.env.example

@@ -13,12 +13,13 @@ interface PersonaConfig {
 
 export default function PromptPlaygroundPage() {
   const [persona, setPersona] = useState<PersonaConfig>({
-    companyName: 'Vibe Telecom',
-    assistantName: 'Assistente Virtual Vibe',
+    companyName: '',
+    assistantName: 'Assistente Virtual',
     tone: 'Empático, consultivo e objetivo',
-    customRules: 'Nunca prometer prazos de visita técnica sem confirmação do NOC. Priorizar geração de PIX para faturas vencidas.',
-    supportHours: 'Segunda a Sexta, das 08:00 às 20:00. Sábados das 08:00 às 14:00.',
+    customRules: '',
+    supportHours: '',
   });
+  const [tenantId, setTenantId] = useState<string | null>(null);
 
   const [testMessage, setTestMessage] = useState('minha internet está lenta e quero o código pix da fatura para pagar');
   const [loading, setLoading] = useState(false);
@@ -32,15 +33,19 @@ export default function PromptPlaygroundPage() {
   } | null>(null);
 
   useEffect(() => {
-    apiFetch<any>('/policy')
+    apiFetch<{ tenantId: string }>('/auth/me')
+      .then((me) => setTenantId(me.tenantId))
+      .catch(() => {});
+    // GET /policy devolve a própria config do tenant (sem envelope).
+    apiFetch<Partial<PersonaConfig> | null>('/policy')
       .then((pol) => {
-        if (pol?.config) {
+        if (pol) {
           setPersona({
-            companyName: pol.config.companyName || 'Vibe Telecom',
-            assistantName: pol.config.assistantName || 'Assistente Virtual Vibe',
-            tone: pol.config.tone || 'Empático, consultivo e objetivo',
-            customRules: pol.config.customRules || '',
-            supportHours: pol.config.supportHours || '',
+            companyName: pol.companyName || '',
+            assistantName: pol.assistantName || 'Assistente Virtual',
+            tone: pol.tone || 'Empático, consultivo e objetivo',
+            customRules: pol.customRules || '',
+            supportHours: pol.supportHours || '',
           });
         }
       })
@@ -49,19 +54,17 @@ export default function PromptPlaygroundPage() {
 
   const handleSimulate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!testMessage.trim() || loading) return;
+    if (!testMessage.trim() || loading || !tenantId) return;
     setLoading(true);
     setResult(null);
 
     try {
       // Cria sessão de teste no webchat usando channelUserId dedicado para simulação
-      const res = await fetch(`${API_URL}/public/webchat/tnt_vibe/message`, {
+      const sessionId = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+      const res = await fetch(`${API_URL}/public/webchat/${encodeURIComponent(tenantId)}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channelUserId: 'playground_test_' + Date.now().toString(36),
-          message: testMessage,
-        }),
+        body: JSON.stringify({ channelUserId: `playground_${sessionId}`, message: testMessage }),
       });
 
       if (res.ok) {
@@ -90,7 +93,7 @@ export default function PromptPlaygroundPage() {
     setSaveSuccess(false);
     try {
       await apiFetch('/policy', {
-        method: 'PUT',
+        method: 'PATCH',
         body: JSON.stringify(persona),
       });
       setSaveSuccess(true);

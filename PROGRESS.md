@@ -364,3 +364,15 @@ Entregue:
 ---
 
 *(Fim das 10 fases da seção 10 nesta sessão.)*
+
+
+---
+
+## Revisão de segurança (2026-09-21)
+
+Auditoria completa + correções. Resumo por área (detalhes em `DECISIONS.md` e `docs/security.md`):
+identificação por documento (era possível ver a conta de outra pessoa digitando um nome), Web Chat público
+(sem busca/gravação/reset abertos), segredos/CORS/portas/Docker, refresh quebrado, RBAC, isolamento de tenant
+fail-closed, IA (máscara de dados pessoais, reply-guard, timeouts), limites de policy aplicados, auditoria de
+argumentos, handoff atômico, credenciais cifradas, SSRF, índices, dependências (66 → 0 vulnerabilidades), CI.
+Testes: 122 (3 falhando) → **233 passando**. Não reexecutado: `apps/e2e` (ver `STATE.md`).

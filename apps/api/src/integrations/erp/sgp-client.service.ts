@@ -33,9 +33,10 @@ export class SgpClientService {
 
   getConfig(): SgpConfig {
     return {
-      baseUrl: (process.env.ISPAGENT_SGP_BASE_URL || 'https://vibetelecom.sgp.net.br').replace(/\/+$/, ''),
-      token: (process.env.ISPAGENT_SGP_TOKEN || 'c3c411c8-7917-4522-bfa3-2a6b388652d7').trim(),
-      app: (process.env.ISPAGENT_SGP_APP || 'sac-ajust').trim(),
+      // Credenciais só por variável de ambiente (.env, fora do git) — nunca como valor padrão no código.
+      baseUrl: (process.env.ISPAGENT_SGP_BASE_URL ?? '').trim().replace(/\/+$/, ''),
+      token: (process.env.ISPAGENT_SGP_TOKEN ?? '').trim(),
+      app: (process.env.ISPAGENT_SGP_APP ?? '').trim(),
       timeoutMs: 15_000,
     };
   }
@@ -51,8 +52,8 @@ export class SgpClientService {
     params: Record<string, string | number | boolean | null | undefined> = {},
   ): Promise<T> {
     const cfg = this.getConfig();
-    if (!cfg.token || !cfg.app) {
-      throw new SgpError('SGP não configurado: token ou app ausentes em variáveis de ambiente.');
+    if (!cfg.baseUrl || !cfg.token || !cfg.app) {
+      throw new SgpError('SGP não configurado: defina ISPAGENT_SGP_BASE_URL, ISPAGENT_SGP_TOKEN e ISPAGENT_SGP_APP.');
     }
 
     const cleanParams: Record<string, string> = {

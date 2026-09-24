@@ -33,7 +33,7 @@ oficial acessível para conferência ponto a ponto, o que a seção 0.2 proíbe 
 
 | Canal | Status |
 |---|---|
-| Web Chat | ✅ VALIDADO end-to-end — testado no browser real (não só curl): identidade resolvida por telefone, `BillingTool`/`SupportTool` executados a partir de mensagem digitada, chamado real criado, timeline visível no painel. `POST/GET /public/webchat/:tenantId/...` (Fase 9). |
+| Web Chat | ✅ VALIDADO (Fase 9, DEMO) e endurecido na revisão de 2026-09-21 — `POST/GET/DELETE /public/webchat/:tenantId/...` cobertos por testes HTTP (`test/http-security.spec.ts`). É um canal de **demonstração**: identidade por telefone só fora de produção; no chat o cliente se identifica por CPF/CNPJ completo (ver `docs/security.md`). Desligado por padrão em produção. O teste E2E em browser (`apps/e2e`) está desatualizado e não foi reexecutado (ver `STATE.md`). |
 | WhatsApp Cloud API | NÃO VALIDADO end-to-end — sem credencial Meta (ver tabela de integrações acima) |
 
 ## Fonte da validação

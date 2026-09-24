@@ -10,19 +10,25 @@ da build, `PROGRESS.md` para o histórico por fase e `DECISIONS.md` para decisõ
 Pré-requisitos: Docker Desktop rodando (Windows/macOS/Linux), `pnpm` instalado (`npm i -g pnpm`).
 
 ```bash
-cp .env.example .env
+cp .env.example .env          # depois troque os segredos "change_me" (openssl rand -base64 48)
 pnpm install
-docker compose up -d --wait
-pnpm db:migrate
-pnpm db:seed
+docker compose up -d --build --wait   # o serviço ispagent-migrate aplica as migrations sozinho
+pnpm db:seed                          # só DEMO/desenvolvimento: cria contas com senha conhecida
 ```
 
 - Web: http://localhost:3000
 - API: http://localhost:3001 (health: `GET /health`)
-- Postgres: `localhost:5433` (db `ispagent`)
-- Redis: `localhost:6380`
+- Postgres: `localhost:5433` (db `ispagent`) — publicado só em `127.0.0.1`
+- Redis: `localhost:6380` (com senha `ISPAGENT_REDIS_PASSWORD`) — publicado só em `127.0.0.1`
+
+Todas as portas ficam em `127.0.0.1` por padrão (`ISPAGENT_BIND_ADDR`). **Antes de colocar em produção**,
+leia o checklist em [`docs/security.md`](docs/security.md): `ISPAGENT_ENV=production` faz a API recusar
+subir com segredos fracos e desliga o Web Chat público por padrão.
 
 ## Login DEMO
+
+As credenciais abaixo só existem depois do `pnpm db:seed` e só aparecem pré-preenchidas na tela de login
+se o web for construído com `NEXT_PUBLIC_DEMO_MODE=true`.
 
 | Usuário | Papel | Tenant |
 |---|---|---|
@@ -30,10 +36,24 @@ pnpm db:seed
 | `operador@alpha.ispagent.local` / `Demo!2026` | AGENT | Provedor Alpha |
 | `admin@beta.ispagent.local` / `Demo!2026` | TENANT_ADMIN | Provedor Beta (existe só para provar isolamento) |
 
+## Testes
+
+```bash
+pnpm test        # suíte da API — roda SEMPRE no banco <nome>_test (criado, migrado e semeado sozinho)
+pnpm lint        # typecheck (tsc --noEmit) de api e web
+pnpm audit       # dependências
+```
+
+Os testes **nunca** tocam o banco de desenvolvimento (`apps/api/test/test-db.js` recusa qualquer banco cujo
+nome não termine em `_test`). O CI (`.github/workflows/ci.yml`) roda typecheck, testes, build e auditoria.
+
 ## Verificação end-to-end
 
+Só em ambiente **descartável**: o script cria contas DEMO com senha conhecida e, com `-Fresh`/`--fresh`,
+apaga os volumes do compose (banco inclusive). Por isso exige `ISPAGENT_VERIFY_ALLOW_DESTROY=1`.
+
 ```powershell
-.\scripts\verify.ps1 -Fresh
+$env:ISPAGENT_VERIFY_ALLOW_DESTROY=1; .\scripts\verify.ps1 -Fresh
 ```
 
 Sobe o ambiente do zero, valida migrations/seed, autentica, testa identificação de cliente, tool calling,

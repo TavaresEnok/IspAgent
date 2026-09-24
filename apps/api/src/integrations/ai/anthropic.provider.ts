@@ -1,15 +1,14 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
-import { Confidence, Intent } from '@ispagent/shared';
 import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
-import { buildReplyUserMessage, REPLY_SYSTEM_PROMPT } from './reply-prompt';
+import { buildReplySystemPrompt, buildReplyUserMessage } from './reply-prompt';
+import { CLASSIFY_SYSTEM_PROMPT, parseIntentClassification } from './json-extract';
+import { maskPii } from './pii-mask';
 
-const VALID_INTENTS: Intent[] = [
-  'SUPORTE_INTERNET', 'SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'FINANCEIRO', 'SEGUNDA_VIA',
-  'PAGAMENTO', 'BLOQUEIO', 'PLANO', 'UPGRADE', 'CONTRATACAO', 'CHAMADO', 'STATUS_CHAMADO',
-  'CANCELAMENTO', 'OUTRO',
-];
-const VALID_CONFIDENCES: Confidence[] = ['HIGH', 'MEDIUM', 'LOW'];
+// Uma chamada lenta não pode segurar o turno do cliente por minutos (o padrão do SDK é 10 min).
+const REQUEST_TIMEOUT_MS = 12_000;
+const MAX_RETRIES = 1;
+const MAX_REPLY_TOKENS = 400;
 
 /**
  * Provider real (seção 6.4) — documentação oficial da Anthropic é a única validável com confiança
@@ -32,7 +31,11 @@ export class AnthropicProvider implements AIProvider {
 
   constructor(@Optional() opts?: { apiKey?: string; model?: string; client?: Pick<Anthropic, 'messages'> }) {
     this.model = opts?.model ?? process.env.ISPAGENT_ANTHROPIC_MODEL ?? 'claude-sonnet-5';
-    this.client = opts?.client ?? new Anthropic({ apiKey: opts?.apiKey ?? process.env.ISPAGENT_ANTHROPIC_API_KEY });
+    this.client = opts?.client ?? new Anthropic({
+        apiKey: opts?.apiKey ?? process.env.ISPAGENT_ANTHROPIC_API_KEY,
+        timeout: REQUEST_TIMEOUT_MS,
+        maxRetries: MAX_RETRIES,
+      });
   }
 
   async classifyIntent(message: string): Promise<IntentClassification> {
@@ -40,21 +43,11 @@ export class AnthropicProvider implements AIProvider {
       const response = await this.client.messages.create({
         model: this.model,
         max_tokens: 100,
-        system:
-          'Você classifica a mensagem de um cliente de provedor de internet em UMA destas intenções: ' +
-          `${VALID_INTENTS.join(', ')}. Responda SOMENTE um JSON: {"intent": "...", "confidence": "HIGH"|"MEDIUM"|"LOW"}.`,
-        messages: [{ role: 'user', content: message }],
+        system: CLASSIFY_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: maskPii(message) }],
       });
 
-      const text = this.extractText(response);
-      const parsed = JSON.parse(text) as { intent: string; confidence: string };
-
-      const intent = VALID_INTENTS.includes(parsed.intent as Intent) ? (parsed.intent as Intent) : 'OUTRO';
-      const confidence = VALID_CONFIDENCES.includes(parsed.confidence as Confidence)
-        ? (parsed.confidence as Confidence)
-        : 'LOW';
-
-      return { intent, confidence };
+      return parseIntentClassification(this.extractText(response));
     } catch (err) {
       this.logger.error(`classifyIntent falhou: ${err instanceof Error ? err.message : err}`);
       throw err;
@@ -66,8 +59,8 @@ export class AnthropicProvider implements AIProvider {
 
       const response = await this.client.messages.create({
         model: this.model,
-        max_tokens: 400,
-        system: REPLY_SYSTEM_PROMPT,
+        max_tokens: Math.min(MAX_REPLY_TOKENS, input.maxOutputTokens ?? MAX_REPLY_TOKENS),
+        system: buildReplySystemPrompt({ persona: input.persona, providerName: input.providerName }),
         messages: [
           {
             role: 'user',

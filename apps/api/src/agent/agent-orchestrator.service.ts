@@ -11,11 +11,15 @@ import { KnowledgeService } from '../knowledge/knowledge.service';
 import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
 import { PULSEISP_ADAPTER, PulseISPAdapter } from '../integrations/pulseisp/pulseisp-adapter.interface';
 import { createPulseISPQueryTool } from '../tools/pulseisp-tool';
-import { isPulseId, toPulseId } from '../integrations/pulseisp/pulseisp-ids';
+import { isPulseId } from '../integrations/pulseisp/pulseisp-ids';
 import { PulseIspClient } from '../integrations/pulseisp/pulseisp-client.service';
 import { PulseIspMirrorService } from '../integrations/pulseisp/pulseisp-mirror.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { ClaimValidatorService, ClaimInvariantViolationError } from './claim-validator.service';
+import { IdentityResolution, IdentityResolutionService, normalizeDocument } from '../identity/identity-resolution.service';
+import { MockAIProvider } from '../integrations/ai/mock-ai.provider';
+import { ComposeReplyInput } from '../integrations/ai/ai-provider.interface';
+import { checkReplyAgainstFacts } from './reply-guard';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
 
@@ -49,11 +53,26 @@ const OUT_OF_SCOPE_GUIDANCE_MESSAGE =
   'caindo ou sem conexão; fatura e segunda via; o seu plano; e abrir ou acompanhar um chamado. ' +
   'Me conta o que você precisa?';
 
+/**
+ * Tentativas de documento erradas/inexistentes por conversa antes de bloquear a identificação por chat
+ * (o limite vem de `handoffAfterFailures` da policy do tenant) e janela em que elas contam.
+ */
+const IDENTITY_FAILURE_ACTION = 'identity.failed_attempt';
+const IDENTITY_LOCK_WINDOW_MS = 30 * 60_000;
+
+const IDENTITY_LOCKED_MESSAGE =
+  'Não consegui confirmar a sua identidade por aqui com segurança. Já encaminhei a sua conversa para um ' +
+  'atendente humano — ele vai te responder em breve.';
+
+const CONTRACT_UNRESOLVED_MESSAGE =
+  'Te identifiquei, mas preciso que um atendente confirme qual dos seus contratos você quer consultar. ' +
+  'Já encaminhei a sua conversa — ele te responde por aqui.';
+
 const AFFIRMATIVE = /^\s*(sim|s|pode|pode sim|pode abrir|quero sim|claro|ok|okay|beleza|blz|por favor|abre|abra|isso|isso mesmo|manda|bora)\s*[!.]*\s*$/iu;
 const NEGATIVE = /^\s*(n[ãa]o|nao|n|agora n[ãa]o|obrigad[oa]|valeu|deixa|tudo bem)(?!\p{L})/iu;
 const FOLLOW_UP_WINDOW_MS = 3 * 60_000; // 3 minutos para perguntas imediatas de diagnóstico
 
-const HANDOFF_TRIGGER = /(?:atendente|humano|pessoa|falar com alguém|falar com alguem|falar com gente|suporte humano|muito burro|burro|você não ajuda|voce nao ajuda|não ajuda|nao ajuda|chama alguém|chama alguem|chamar atendente|passa pra alguém|passa pra alguem|atendimento humano|operador|falar com um atendente|quero um atendente)/i;
+const HANDOFF_TRIGGER = /(?:atendente|humano|falar com (?:uma )?pessoa|falar com alguém|falar com alguem|falar com gente|suporte humano|muito burro|burro|você não ajuda|voce nao ajuda|não ajuda|nao ajuda|chama alguém|chama alguem|chamar atendente|passa pra alguém|passa pra alguem|atendimento humano|operador|falar com um atendente|quero um atendente)/i;
 const SCOPE_TRIGGER = /(?:o que voc[eê] pode fazer|o que voc[eê] faz|o que faz|quais (?:s[aã]o )?(?:as )?op[cç][oõ]es|menu|ajuda|listar|o que voc[eê] resolve|o que pode fazer por mim|quais os servi[cç]os)/i;
 const PENDING_BILLING_TRIGGER = /(?:outras solicita[cç][oõ]es|outra solicita[cç][aã]o|minhas solicita[cç][oõ]es|e o pix|e o pdf|e a fatura|e o boleto|cade o pix|cadê o pix|qrcod|qr code|qrcode|sem ser o link|pdf do boleto|eu pedi o pix|pedi o pix)/i;
 const CLARIFICATION_TRIGGER = /^(?:como assim|que sinal|por que|pq|que oscila[cç][aã]o|explica|n[aã]o entendi|como assim\??|que\??)\b/i;
@@ -95,6 +114,9 @@ export class AgentOrchestratorService {
   private readonly pulseIspTool;
   private readonly pulseIspLiveTool;
   private readonly logger = new Logger(AgentOrchestratorService.name);
+  private readonly identity: IdentityResolutionService;
+  /** Resposta por regras usada quando o reply-guard descarta o texto do LLM (nunca inventa fato). */
+  private readonly deterministicAi = new MockAIProvider();
 
   constructor(
     private readonly db: TenantPrismaService,
@@ -108,7 +130,9 @@ export class AgentOrchestratorService {
     private readonly handoff: HandoffService,
     @Optional() private readonly pulseClient?: PulseIspClient,
     @Optional() private readonly mirror?: PulseIspMirrorService,
+    @Optional() identity?: IdentityResolutionService,
   ) {
+    this.identity = identity ?? new IdentityResolutionService(db);
     this.pulseIspTool = createPulseISPQueryTool(pulseisp);
     // Contratos `pulse_*` são clientes REAIS do PulseISP (simulador do painel): mesma ferramenta, mas
     // rotulada como LIVE/RealPulseISPAdapter no ToolCall — nunca aparece como DEMO um dado real.
@@ -137,31 +161,31 @@ export class AgentOrchestratorService {
     let customerName: string | null = null;
     let justIdentified = false;
     let attemptedTerm: string | null = null;
+    let identityLocked = false;
 
     const hasCustomer = 'customerId' in identityResult && Boolean(identityResult.customerId);
 
     if (!hasCustomer) {
-      const dynamic = await this.tryDynamicIdentification(tenantId, customerMessage);
-      if (dynamic?.identified && dynamic.customerId && dynamic.contractId) {
+      // Só documento completo (CPF/CNPJ), exato e único identifica alguém pelo chat — nunca nome, código,
+      // telefone digitado ou trecho de texto (isso era uma porta aberta para ver a conta de outra pessoa).
+      const dynamic = await this.identifyByDocument(tenantId, conversationId, customerMessage, identityResult);
+      if (dynamic.kind === 'identified') {
         await this.db.client.conversation.update({
           where: { id: conversationId },
           data: {
-            customerId: dynamic.customerId,
-            contractId: dynamic.contractId,
-            identityMethod: 'DOCUMENT',
-            identityConfidence: 'HIGH',
+            customerId: dynamic.resolution.customerId,
+            contractId: dynamic.resolution.contractId,
+            identityMethod: dynamic.resolution.method,
+            identityConfidence: dynamic.resolution.confidence,
           },
         });
-        identityResult = {
-          method: 'DOCUMENT',
-          confidence: 'HIGH',
-          customerId: dynamic.customerId,
-          contractId: dynamic.contractId,
-        };
-        customerName = dynamic.customerName ?? null;
+        identityResult = dynamic.resolution;
+        customerName = dynamic.customerName;
         justIdentified = true;
-      } else if (dynamic?.searchedTerm) {
-        attemptedTerm = dynamic.searchedTerm;
+      } else if (dynamic.kind === 'not_found') {
+        attemptedTerm = dynamic.term;
+      } else if (dynamic.kind === 'locked') {
+        identityLocked = true;
       }
     } else if ('customerId' in identityResult && identityResult.customerId) {
       const cust = await this.db.client.customer.findUnique({
@@ -260,11 +284,12 @@ export class AgentOrchestratorService {
       };
     }
 
-    // 2. Dúvida de escopo / o que o robô faz / ajuda
-    if (SCOPE_TRIGGER.test(customerMessage)) {
+    // 2. Dúvida de escopo / o que o robô faz / ajuda — só quando a mensagem não traz um pedido concreto
+    // ("preciso de ajuda com a fatura" deve ir para a fatura, não para o menu).
+    if (!aiFailed && classification.intent === 'OUTRO' && SCOPE_TRIGGER.test(customerMessage)) {
       const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
       const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
-      const replyText = `${greeting}como assistente virtual da Vibe Telecom, posso te ajudar com:\n\n• 📄 **2ª Via de Fatura e Boletos** (com PDF para download)\n• 📱 **Código PIX e QR Code** para pagamento rápido\n• 🌐 **Diagnóstico de Conexão e Teste de Sinal da Fibra**\n• 📦 **Consulta do seu Plano Contratado**\n• 👤 **Transferência para Atendente Humano**\n\nComo posso te ajudar agora?`;
+      const replyText = `${greeting}como assistente virtual da ${await this.companyName(tenantId)}, posso te ajudar com:\n\n• 📄 **2ª Via de Fatura e Boletos** (com PDF para download)\n• 📱 **Código PIX e QR Code** para pagamento rápido\n• 🌐 **Diagnóstico de Conexão e Teste de Sinal da Fibra**\n• 📦 **Consulta do seu Plano Contratado**\n• 👤 **Transferência para Atendente Humano**\n\nComo posso te ajudar agora?`;
 
       const agentRun = await this.db.client.agentRun.create({
         data: {
@@ -373,54 +398,21 @@ export class AgentOrchestratorService {
 
     const accountAvailable = Boolean(identifiedContractId && identifiedCustomerId);
     const realPulseContract = isPulseId(identifiedContractId);
+    // Óptico do ERP: nunca para contrato do PulseISP (o ERP não conhece esse id) e nunca dado DEMO
+    // misturado num atendimento real.
+    const erpOpticalApplies = !realPulseContract && (this.erpTools.erp.mode === 'LIVE' || !pulseIspEnabled());
 
     // 4. Fluxo de Retenção de Cancelamento
     if (classification.intent === 'CANCELAMENTO') {
-      const company = tenantPolicy?.companyName || 'Vibe Telecom';
+      const company = await this.companyName(tenantId, tenantPolicy?.companyName);
       const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
       const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
 
       // Verifica se o cliente já mencionou motivo financeiro/preço
-      if (/(?:caro|preço|preco|valor|aumentou|concorr[eê]ncia|desconto)/i.test(customerMessage)) {
-        await this.db.client.cancellationRequest.create({
-          data: {
-            tenantId,
-            conversationId,
-            customerId: identifiedCustomerId,
-            contractId: identifiedContractId,
-            reason: customerMessage,
-            discountOffered: true,
-            status: 'OPEN',
-          },
-        });
-
-        const replyText = `${greeting}compreendo perfeitamente o seu ponto. Você é um cliente muito especial para a ${company} e não queremos que você fique desconectado. Gostaria de te oferecer uma condição exclusiva de desconto especial na sua mensalidade para mantermos o seu plano ativo. Deseja que eu aplique essa condição para você?`;
-        await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
-
-        await this.db.client.agentRun.update({
-          where: { id: agentRun.id },
-          data: { outcome: 'ANSWERED' },
-        });
-
-        return {
-          agentRunId: agentRun.id,
-          tenantId,
-          conversationId,
-          intent: 'CANCELAMENTO',
-          intentConfidence: 'HIGH',
-          identity: null,
-          toolCalls: [],
-          policyDecisions: [],
-          claims: [],
-          outcome: 'ANSWERED',
-          promptVersion: PROMPT_VERSION,
-          model: ai.model,
-          mode: ai.mode,
-        };
-      }
-
       // Se ainda não especificou motivo
-      const hasAnyReason = /(?:mudan[çc]a|mudei|endere[çc]o|ruim|lenta|inst[aá]vel|n[aã]o uso|viagem|vender)/i.test(customerMessage);
+      const priceReason = /(?:caro|preço|preco|valor|aumentou|concorr[eê]ncia|desconto)/i.test(customerMessage);
+      const hasAnyReason =
+        priceReason || /(?:mudan[çc]a|mudei|endere[çc]o|ruim|lenta|inst[aá]vel|n[aã]o uso|viagem|vender)/i.test(customerMessage);
       if (!hasAnyReason) {
         const replyText = `${greeting}lamento muito pela sua intenção de cancelamento. Para que eu possa te orientar da melhor forma, você poderia me informar o motivo principal? (Por exemplo: valor da fatura, mudança de endereço ou instabilidade no sinal?)`;
         await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
@@ -455,6 +447,8 @@ export class AgentOrchestratorService {
           customerId: identifiedCustomerId,
           contractId: identifiedContractId,
           reason: customerMessage,
+          // Motivo de preço: a retenção humana avalia uma condição especial (a IA não promete desconto).
+          discountOffered: priceReason,
           status: 'TRANSFERRED',
         },
       });
@@ -471,7 +465,9 @@ export class AgentOrchestratorService {
         suggestedNextAction: 'Equipe de retenção humana para conclusão do cancelamento.',
       });
 
-      const replyText = `${greeting}compreendo perfeitamente. Registrei os detalhes do seu pedido e estou transferindo agora para a nossa equipe especializada de retenção humana para te auxiliar no processo. Por favor, aguarde um instante.`;
+      const replyText = priceReason
+        ? `${greeting}compreendo perfeitamente o seu ponto — você é muito importante para a ${company}. Registrei o seu pedido e estou passando agora para a nossa equipe de retenção, que pode avaliar uma condição especial para você. Por favor, aguarde um instante.`
+        : `${greeting}compreendo perfeitamente. Registrei os detalhes do seu pedido e estou transferindo agora para a nossa equipe especializada de retenção humana para te auxiliar no processo. Por favor, aguarde um instante.`;
       await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
 
       await this.db.client.agentRun.update({
@@ -498,15 +494,16 @@ export class AgentOrchestratorService {
 
     // 5. Fluxo Comercial de Contratação & Upgrade (Captura de Lead)
     if (classification.intent === 'CONTRATACAO' || classification.intent === 'UPGRADE') {
-      const company = tenantPolicy?.companyName || 'Vibe Telecom';
+      const company = await this.companyName(tenantId, tenantPolicy?.companyName);
       const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
       const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
+      const channelPhone = /^\+?\d{10,13}$/.test(conversationRecord.channelUserId) ? conversationRecord.channelUserId : null;
 
       await this.db.client.commercialLead.create({
         data: {
           tenantId,
           name: customerName || 'Interessado via Chat',
-          phone: conversationRecord.channelUserId || 'Sem telefone',
+          phone: channelPhone ?? 'Não informado (Web Chat)',
           desiredPlan: classification.intent === 'UPGRADE' ? 'Upgrade de Velocidade' : 'Novo Plano Fibra Óptica',
           originChannel: 'WEBCHAT',
           status: 'NEW',
@@ -556,12 +553,19 @@ export class AgentOrchestratorService {
 
     // Cliente precisa ser identificado (pedir CPF) se o assunto requer conta/conexão, OU se o bot já pediu CPF
     // e o cliente ainda não o forneceu (ou digitou algo não encontrado).
-    const needsCpf = !accountAvailable && (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
+    // Cliente conhecido mas sem UM contrato ativo inequívoco: perguntar CPF de novo não resolve (loop) —
+    // um atendente confirma o contrato.
+    const contractUnresolved = !accountAvailable && identifiedCustomerId !== null && needsAccountOrNetwork;
+    const needsCpf =
+      !identityLocked &&
+      !contractUnresolved &&
+      !accountAvailable &&
+      (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
 
     // Se a classificação falhou, não escolhemos ferramenta nenhuma a partir dela — `toolResults`/
     // `policyDecisions` ficam vazios e o turno vai direto pro caminho de HANDOFF abaixo.
-    if (declined) {
-      // nada a consultar — só encerra a oferta
+    if (declined || identityLocked || contractUnresolved) {
+      // nada a consultar — só encerra a oferta / a identidade não está confirmada (vira handoff abaixo)
     } else if (needsCpf) {
       // Cliente ainda não identificado: não faz busca de KB inútil nem gera handoff.
       // O bot vai solicitar ou reiterar a necessidade do CPF para poder dar prosseguimento.
@@ -574,10 +578,11 @@ export class AgentOrchestratorService {
         await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
       );
 
-      // Leitura da potência óptica da fibra (dBm / PON) em tempo real
+      // Leitura da potência óptica da fibra (dBm / PON) pelo ERP — só para contrato do próprio ERP
+      // (`erpOpticalApplies`): cliente real do PulseISP já traz o óptico do PulseISP.
       const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
       policyDecisions.push(opticalDecision);
-      if (opticalDecision.allowed) {
+      if (opticalDecision.allowed && erpOpticalApplies) {
         toolResults.push(
           await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
         );
@@ -648,10 +653,11 @@ export class AgentOrchestratorService {
         );
       }
 
-      // Leitura da potência óptica da fibra (dBm / PON) em tempo real
+      // Leitura da potência óptica da fibra (dBm / PON) pelo ERP — só para contrato do próprio ERP
+      // (`erpOpticalApplies`): cliente real do PulseISP já traz o óptico do PulseISP.
       const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
       policyDecisions.push(opticalDecision);
-      if (opticalDecision.allowed) {
+      if (opticalDecision.allowed && erpOpticalApplies) {
         toolResults.push(
           await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
         );
@@ -676,6 +682,8 @@ export class AgentOrchestratorService {
     let outcome: AgentDecision['outcome'];
     if (declined) {
       outcome = 'ANSWERED';
+    } else if (identityLocked || contractUnresolved) {
+      outcome = 'HANDOFF';
     } else if (needsCpf) {
       outcome = 'ANSWERED';
     } else if (aiFailed) {
@@ -694,7 +702,31 @@ export class AgentOrchestratorService {
     }
 
     if (outcome === 'HANDOFF') {
-      const summary = aiFailed
+      const summary = identityLocked
+        ? {
+            reason: 'Identidade do cliente não confirmada: várias tentativas de documento sem correspondência.',
+            customerId: null,
+            contractId: null,
+            intent: classification.intent,
+            reportedProblem: customerMessage,
+            toolsConsulted: [],
+            actionsTaken: [],
+            actionsFailed: [],
+            suggestedNextAction: 'Confirmar a identidade do cliente por outro meio antes de qualquer consulta de conta.',
+          }
+        : contractUnresolved
+          ? {
+              reason: 'Cliente identificado, mas sem um único contrato ativo — o contrato precisa ser confirmado por um atendente.',
+              customerId: identifiedCustomerId,
+              contractId: null,
+              intent: classification.intent,
+              reportedProblem: customerMessage,
+              toolsConsulted: [],
+              actionsTaken: [],
+              actionsFailed: [],
+              suggestedNextAction: 'Perguntar ao cliente qual contrato ele quer consultar e seguir o atendimento.',
+            }
+        : aiFailed
         ? {
             reason: `IA indisponível para classificar a mensagem (${ai.name}) — encaminhado sem tentar adivinhar a intenção.`,
             customerId: identifiedCustomerId,
@@ -712,7 +744,11 @@ export class AgentOrchestratorService {
 
     const primaryResult = toolResults[0];
     let replyText: string;
-    if (aiFailed) {
+    if (identityLocked) {
+      replyText = IDENTITY_LOCKED_MESSAGE;
+    } else if (contractUnresolved) {
+      replyText = CONTRACT_UNRESOLVED_MESSAGE;
+    } else if (aiFailed) {
       replyText = AI_PROVIDER_FAILURE_MESSAGE;
     } else if (declined) {
       replyText = DECLINED_MESSAGE;
@@ -730,20 +766,25 @@ export class AgentOrchestratorService {
           where: { id: conversationId },
           select: { summary: true },
         });
+        const history = await this.recentHistory(conversationId);
+        const limits = await this.policy.getLimits();
+        const providerName = await this.companyName(tenantId, tenantPolicy?.companyName);
 
-        replyText = await ai.composeReply({
+        const replyInput: ComposeReplyInput = {
           intent: classification.intent,
           customerName: customerName,
           facts: allFacts,
           toolStatus: primaryResult ? primaryResult.status : null,
           followUp,
           customerMessage,
-          history: await this.recentHistory(conversationId),
+          history,
           needsCpf,
           justIdentified,
           cpfNotFound: attemptedTerm,
+          providerName,
+          maxOutputTokens: limits.maxTokensPerTurn,
           persona: {
-            companyName: tenantPolicy?.companyName || 'Vibe Telecom',
+            companyName: providerName,
             assistantName: tenantPolicy?.assistantName || 'Assistente Virtual',
             tone: tenantPolicy?.tone || 'caloroso, educado, empático e resolutivo (2 a 4 frases)',
             customRules: tenantPolicy?.customRules || undefined,
@@ -752,7 +793,19 @@ export class AgentOrchestratorService {
           },
           summary: conv?.summary,
           intents: detectedIntents,
-        });
+        };
+        replyText = await ai.composeReply(replyInput);
+
+        // O texto do LLM só sai se não afirmar nada além dos fatos; senão, resposta determinística.
+        if (ai.mode === 'LIVE') {
+          const verdict = checkReplyAgainstFacts(replyText, allFacts, { customerMessage, history });
+          if (!verdict.ok) {
+            this.logger.warn(
+              `Resposta do LLM (${ai.name}) descartada pelo reply-guard: ${verdict.violations.join('; ')}`,
+            );
+            replyText = await this.deterministicAi.composeReply(replyInput);
+          }
+        }
       } catch (err) {
         this.logger.error(
           `composeReply (${ai.name}) falhou — encaminhando pra humano sem inventar resposta: ` +
@@ -924,181 +977,103 @@ export class AgentOrchestratorService {
     return 'HANDOFF';
   }
 
+  /** Nome de exibição do provedor: persona do tenant, senão o nome do tenant sem sufixos técnicos. */
+  private async companyName(tenantId: string, personaName?: string | null): Promise<string> {
+    if (personaName?.trim()) return personaName.trim();
+    const tenant = await this.db.client.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
+    return tenant?.name.replace(/\s*\(.*\)\s*$/, '').trim() || 'seu provedor de internet';
+  }
+
   /**
-   * Tenta identificar o cliente dinamicamente a partir do texto da mensagem enviada no chat.
-   * Suporta busca por CPF/CNPJ, telefone, código de cliente/contrato, login PPPoE ou nome.
+   * Identificação por documento digitado no chat. Regras (seção 5.1: nunca vincular a um contrato
+   * incerto): só CPF/CNPJ completo; match exato e único; com telefone ambíguo o documento precisa bater
+   * TAMBÉM com um dos telefones candidatos; exatamente um contrato ativo; confiança no máximo MEDIUM
+   * quando só o documento prova (o documento vaza com facilidade). Falhas são contadas por conversa e,
+   * ao atingir `handoffAfterFailures` da policy, bloqueiam novas tentativas (contra adivinhação de CPF).
+   *
+   * Fontes, nesta ordem: banco local → ERP ativo (ex.: SGP, que espelha o cliente no banco) → PulseISP
+   * (login PPPoE = CPF). Toda fonte externa só ESPELHA o cliente; quem decide é sempre a mesma regra
+   * exata do banco local, então nenhuma fonte "afrouxa" a identificação.
    */
-  private async tryDynamicIdentification(
+  private async identifyByDocument(
     tenantId: string,
+    conversationId: string,
     message: string,
-  ): Promise<{
-    identified: boolean;
-    customerId?: string;
-    contractId?: string;
-    customerName?: string;
-    searchedTerm?: string;
-  } | null> {
-    const terms: string[] = [];
-    let explicitIdentifier: string | null = null;
+    current: IdentityResolution,
+  ): Promise<
+    | { kind: 'none' }
+    | { kind: 'identified'; resolution: Extract<IdentityResolution, { customerId: string }>; customerName: string | null }
+    | { kind: 'not_found'; term: string }
+    | { kind: 'locked' }
+  > {
+    const documentMatch =
+      message.match(/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/) || message.match(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/);
+    const digits = documentMatch ? normalizeDocument(documentMatch[0]) : null;
+    if (!digits) return { kind: 'none' };
 
-    // 1. CPF ou CNPJ (com ou sem pontuação)
-    const docMatch =
-      message.match(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/) ||
-      message.match(/\b\d{11}\b/) ||
-      message.match(/\b\d{14}\b/);
-    if (docMatch) {
-      const cleanDoc = docMatch[0].replace(/\D/g, '');
-      terms.push(cleanDoc);
-      explicitIdentifier = cleanDoc;
-    }
+    const { handoffAfterFailures } = await this.policy.getLimits();
+    const failures = await this.db.client.auditLog.count({
+      where: {
+        action: IDENTITY_FAILURE_ACTION,
+        entityId: conversationId,
+        createdAt: { gte: new Date(Date.now() - IDENTITY_LOCK_WINDOW_MS) },
+      },
+    });
+    if (failures >= handoffAfterFailures) return { kind: 'locked' };
 
-    // 2. Telefone com DDD (10 ou 11 dígitos, ex.: 81982648003 ou (81) 98264-8003)
-    const phoneMatch = message.match(/\b(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?(?:9\s*)?\d{4}[-\s]?\d{4}\b/);
-    if (phoneMatch) {
-      const cleanPhone = phoneMatch[0].replace(/\D/g, '');
-      if ((cleanPhone.length === 10 || cleanPhone.length === 11) && !terms.includes(cleanPhone)) {
-        terms.push(cleanPhone);
-        explicitIdentifier = explicitIdentifier || cleanPhone;
+    const conversationRecord = await this.db.client.conversation.findUniqueOrThrow({ where: { id: conversationId } });
+    const resolveLocal = () =>
+      current.method === 'AMBIGUOUS'
+        ? this.identity.resolveByPhoneAndDocument(conversationRecord.channelUserId, digits)
+        : this.identity.resolveByDocument(digits);
+    let resolution = await resolveLocal();
+
+    // ERP ativo (SGP/IXC): busca SÓ pelo documento; o adapter espelha o cliente e os contratos no banco.
+    if (resolution.method === 'NOT_FOUND') {
+      try {
+        const found = await this.erpTools.erp.findCustomer({ document: digits });
+        if (found) resolution = await resolveLocal();
+      } catch (err) {
+        this.logger.warn(`[identity] Falha na busca por documento no ERP: ${err instanceof Error ? err.message : err}`);
       }
     }
 
-    // 3. Código do cliente / contrato numérico (4 a 8 dígitos)
-    const codeMatch =
-      message.match(/\b(?:c[oó]digo|contrato|cliente|id)[:\s]+([0-9]+)\b/i) ||
-      (message.trim().length <= 8 && message.trim().match(/^\d{4,8}$/));
-    if (codeMatch) {
-      const cleanCode = codeMatch[1] || codeMatch[0];
-      if (!terms.includes(cleanCode)) {
-        terms.push(cleanCode);
-        explicitIdentifier = explicitIdentifier || cleanCode;
-      }
-    }
-
-    // 4. Expressões comuns de identificação de nome/login
-    const introMatches = [
-      /meu (?:nome|login|usu[aá]rio) [eé]\s+([a-zA-ZÀ-ÿ0-9._\s]+)/i,
-      /sou (?:o|a)?\s+([a-zA-ZÀ-ÿ0-9._\s]+)/i,
-      /me chamo\s+([a-zA-ZÀ-ÿ0-9._\s]+)/i,
-      /login[:\s]+([a-zA-Z0-9._-]+)/i,
-      /cpf[:\s]+([0-9.-]+)/i,
-    ];
-
-    for (const regex of introMatches) {
-      const match = message.match(regex);
-      if (match && match[1]) {
-        const clean = match[1].trim().replace(/[.,!?;]+$/, '');
-        if (clean.length >= 3 && !terms.includes(clean)) {
-          terms.push(clean);
-          explicitIdentifier = explicitIdentifier || clean;
+    // PulseISP: login PPPoE costuma ser o CPF sem formatação. Só CPF (11 dígitos), não CNPJ.
+    if (resolution.method === 'NOT_FOUND' && digits.length === 11 && pulseIspEnabled() && this.pulseClient && this.mirror) {
+      try {
+        const found = await this.pulseClient.findByPppoeLogin(tenantId, digits);
+        if (found) {
+          const c360 = await this.pulseClient.customer360(tenantId, found.id);
+          await this.mirror.upsertFromCustomer360(tenantId, c360, { document: digits });
+          resolution = await resolveLocal();
+          this.logger.log(`[identity] CPF final ${digits.slice(-4)} identificado via PulseISP (login PPPoE)`);
         }
+      } catch (err) {
+        this.logger.warn(`[identity] Falha no fallback PulseISP: ${err instanceof Error ? err.message : err}`);
       }
     }
 
-    // 5. Se a mensagem for curta e se parecer com um nome ou login (não descrição de problema ou conversa)
-    const trimmed = message.trim().replace(/[.,!?;]+$/, '');
-    const isDescriptiveOrProblem =
-      /(?:internet|sinal|ruim|lent[oa]|queda|caindo|caiu|fatura|boleto|bloqueio|plano|chamado|visita|t[eé]cnico|suporte|modem|roteador|fibra|conectar|conex[aã]o|ajuda|funciona|preciso|quero|meu|minha|n[aã]o|problema|ol[aá]|bom dia|boa tarde|boa noite|teste)/i;
-
-    if (
-      trimmed.length >= 3 &&
-      trimmed.length <= 40 &&
-      !terms.includes(trimmed) &&
-      !isDescriptiveOrProblem.test(trimmed) &&
-      /^[a-zA-ZÀ-ÿ0-9._\s-]+$/.test(trimmed)
-    ) {
-      terms.push(trimmed);
-    }
-
-    // Tentar localizar no banco local
-    for (const term of terms) {
-      const localCust = await this.db.client.customer.findFirst({
-        where: {
-          OR: [
-            { document: term },
-            { name: { contains: term, mode: 'insensitive' } },
-            { externalId: term },
-            { phones: { has: term } },
-          ],
-        },
-        include: { contracts: { where: { status: 'ACTIVE' } } },
+    if (resolution.method === 'DOCUMENT' && resolution.contractId) {
+      const customer = await this.db.client.customer.findUnique({
+        where: { id: resolution.customerId },
+        select: { name: true },
       });
-      if (localCust && localCust.contracts.length > 0) {
-        return {
-          identified: true,
-          customerId: localCust.id,
-          contractId: localCust.contracts[0].id,
-          customerName: localCust.name,
-        };
-      }
+      return { kind: 'identified', resolution, customerName: customer?.name ?? null };
     }
 
-    // Tentar buscar via ERP ativo (ex.: SGP)
-    if (this.erpTools?.erp) {
-      for (const term of terms) {
-        try {
-          const isDoc = /^\d{11}$|^\d{14}$/.test(term);
-          const isPhone = /^\d{10,11}$/.test(term);
-          const found = await this.erpTools.erp.findCustomer({
-            document: isDoc ? term : undefined,
-            phone: isPhone ? term : undefined,
-            contractId: !isDoc && !isPhone ? term : undefined,
-          });
-          if (found) {
-            const contracts = await this.erpTools.erp.getContracts(found.id);
-            const activeContract = contracts.find((c) => c.status === 'ACTIVE') || contracts[0];
-            if (activeContract) {
-              return {
-                identified: true,
-                customerId: found.id,
-                contractId: activeContract.id,
-                customerName: found.name,
-              };
-            }
-          }
-        } catch (err) {
-          this.logger.warn(`Falha na busca dinâmica de cliente no ERP para '${term}': ${err}`);
-        }
-      }
-    }
-
-    // Se não achou no ERP, tentar buscar no PulseISP (telemetria real da Vibe Telecom)
-    if (this.pulseClient && this.mirror) {
-      for (const term of terms) {
-        try {
-          const results = await this.pulseClient.searchCustomers(tenantId, term);
-          if (results && results.items && results.items.length > 0) {
-            let chosen = results.items[0];
-            if (results.items.length > 1) {
-              const exact = results.items.find(
-                (it) =>
-                  it.name.toLowerCase() === term.toLowerCase() ||
-                  it.externalId === term ||
-                  it.name.toLowerCase().includes(term.toLowerCase()),
-              );
-              if (exact) chosen = exact;
-            }
-            const c360 = await this.pulseClient.customer360(tenantId, chosen.id);
-            const mirrored = await this.mirror.upsertFromCustomer360(tenantId, c360);
-            return {
-              identified: true,
-              customerId: mirrored.contractId,
-              contractId: mirrored.contractId,
-              customerName: mirrored.customerName,
-            };
-          }
-        } catch (err) {
-          this.logger.warn(`Falha na busca dinâmica de cliente no PulseISP para '${term}': ${err}`);
-        }
-      }
-    }
-
-    if (explicitIdentifier) {
-      return {
-        identified: false,
-        searchedTerm: explicitIdentifier,
-      };
-    }
-
-    return null;
+    // O documento em si não vai para o log (é dado pessoal); só o motivo.
+    await this.db.client.auditLog.create({
+      data: {
+        tenantId,
+        actorType: 'AGENT',
+        action: IDENTITY_FAILURE_ACTION,
+        entityType: 'Conversation',
+        entityId: conversationId,
+        metadata: { reason: resolution.method === 'DOCUMENT' ? 'CONTRACT_NOT_UNIQUE' : resolution.method },
+      },
+    });
+    // A última tentativa permitida já bloqueia: o handoff acontece no turno em que o limite estoura.
+    if (failures + 1 >= handoffAfterFailures) return { kind: 'locked' };
+    return { kind: 'not_found', term: digits };
   }
 }

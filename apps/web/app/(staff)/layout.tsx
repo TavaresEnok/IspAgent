@@ -3,7 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { getAccessToken, clearSession, apiFetch, API_URL } from '@/lib/api';
+import { ROLE_HIERARCHY, type Role } from '@ispagent/shared';
+import { getAccessToken, apiLogout, apiFetch, API_URL } from '@/lib/api';
+
+const BRAND = process.env.NEXT_PUBLIC_WEBCHAT_BRAND || 'ISPAgent';
 
 interface Me {
   userId: string;
@@ -12,21 +15,23 @@ interface Me {
   email: string;
 }
 
-const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: '📊' },
-  { href: '/conversations', label: 'Conversas', icon: '💬' },
-  { href: '/handoff', label: 'Fila Humana', icon: '👤' },
-  { href: '/leads', label: 'Leads & Retenção', icon: '💼' },
-  { href: '/customers', label: 'Clientes', icon: '👥' },
-  { href: '/sgp', label: 'SGP Telecom', icon: '⚡' },
-  { href: '/playground', label: 'Laboratório IA', icon: '🧪' },
-  { href: '/knowledge', label: 'Base de Conhecimento', icon: '📚' },
-  { href: '/integrations', label: 'Integrações', icon: '🔌' },
-  { href: '/ai-settings', label: 'Configurações IA', icon: '🤖' },
-  { href: '/policies', label: 'Políticas & Regras', icon: '🛡️' },
-  { href: '/tools', label: 'Ferramentas ERP', icon: '🛠️' },
-  { href: '/users', label: 'Operadores', icon: '🔑' },
-  { href: '/audit', label: 'Auditoria', icon: '📜' },
+// `minRole` espelha o RBAC da API (@Roles nos controllers): o menu só mostra o que o papel consegue usar.
+const NAV: Array<{ href: string; label: string; icon: string; minRole: Role }> = [
+  { href: '/dashboard', label: 'Dashboard', icon: '📊', minRole: 'READ_ONLY' },
+  { href: '/conversations', label: 'Conversas', icon: '💬', minRole: 'ANALYST' },
+  { href: '/handoff', label: 'Fila Humana', icon: '👤', minRole: 'ANALYST' },
+  { href: '/leads', label: 'Leads & Retenção', icon: '💼', minRole: 'ANALYST' },
+  { href: '/customers', label: 'Clientes', icon: '👥', minRole: 'ANALYST' },
+  { href: '/sgp', label: 'SGP', icon: '⚡', minRole: 'AGENT' },
+  { href: '/pulseisp', label: 'PulseISP', icon: '📡', minRole: 'TENANT_ADMIN' },
+  { href: '/playground', label: 'Laboratório IA', icon: '🧪', minRole: 'TENANT_ADMIN' },
+  { href: '/knowledge', label: 'Base de Conhecimento', icon: '📚', minRole: 'READ_ONLY' },
+  { href: '/integrations', label: 'Integrações', icon: '🔌', minRole: 'READ_ONLY' },
+  { href: '/ai-settings', label: 'Configurações IA', icon: '🤖', minRole: 'TENANT_ADMIN' },
+  { href: '/policies', label: 'Políticas & Regras', icon: '🛡️', minRole: 'READ_ONLY' },
+  { href: '/tools', label: 'Ferramentas ERP', icon: '🛠️', minRole: 'READ_ONLY' },
+  { href: '/users', label: 'Operadores', icon: '🔑', minRole: 'TENANT_ADMIN' },
+  { href: '/audit', label: 'Auditoria', icon: '📜', minRole: 'SUPERVISOR' },
 ];
 
 function playNotificationChime() {
@@ -69,24 +74,40 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
       .then((q) => setPendingHandoffs(q.length))
       .catch(() => {});
 
-    // Conexão SSE em tempo real
+    // Tempo real (SSE). O EventSource não envia Authorization: pede-se um ticket curto logado e o stream
+    // é aberto com ele; se a conexão cair, pede outro ticket (o antigo já expirou).
     let es: EventSource | null = null;
-    try {
-      es = new EventSource(`${API_URL}/events/stream?tenantId=tnt_vibe`);
-      es.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload?.type === 'NEW_HANDOFF') {
-            setPendingHandoffs((prev) => prev + 1);
-            playNotificationChime();
-            setRealtimeAlert('🔔 Novo cliente entrou na Fila de Atendente Humano!');
-            setTimeout(() => setRealtimeAlert(null), 5000);
-          }
-        } catch {}
-      };
-    } catch {}
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
+    const connect = async () => {
+      try {
+        const { ticket } = await apiFetch<{ ticket: string }>('/events/ticket', { method: 'POST' });
+        if (closed) return;
+        es = new EventSource(`${API_URL}/events/stream?ticket=${encodeURIComponent(ticket)}`);
+        es.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload?.type === 'NEW_HANDOFF') {
+              setPendingHandoffs((prev) => prev + 1);
+              playNotificationChime();
+              setRealtimeAlert('🔔 Novo cliente entrou na Fila de Atendente Humano!');
+              setTimeout(() => setRealtimeAlert(null), 5000);
+            }
+          } catch {}
+        };
+        es.onerror = () => {
+          es?.close();
+          if (!closed) retry = setTimeout(connect, 10_000);
+        };
+      } catch {
+        if (!closed) retry = setTimeout(connect, 30_000);
+      }
+    };
+    connect();
 
     return () => {
+      closed = true;
+      clearTimeout(retry);
       es?.close();
     };
   }, [router]);
@@ -96,11 +117,14 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
       <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
         <div className="flex items-center gap-3">
           <span className="h-4 w-4 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin" />
-          <span>Carregando painel Vibe Telecom...</span>
+          <span>Carregando painel {BRAND}...</span>
         </div>
       </div>
     );
   }
+
+  const rank = me ? (ROLE_HIERARCHY[me.role as Role] ?? 0) : 0;
+  const visibleNav = NAV.filter((item) => rank >= ROLE_HIERARCHY[item.minRole]);
 
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans">
@@ -110,11 +134,11 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
           {/* Brand Header */}
           <div className="mb-6 flex items-center gap-3 px-2">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 font-extrabold text-white shadow-md shadow-cyan-500/20 text-lg">
-              V
+              {BRAND.charAt(0).toUpperCase()}
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="font-bold text-base text-white tracking-tight">Vibe Telecom</span>
+                <span className="font-bold text-base text-white tracking-tight">{BRAND}</span>
               </div>
               <span className="text-[10px] font-medium text-cyan-400 uppercase tracking-wider">
                 Painel Staff NOC
@@ -124,7 +148,7 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
 
           {/* Navigation Links */}
           <nav className="flex flex-col gap-1 text-xs font-medium">
-            {NAV.map((item) => {
+            {visibleNav.map((item) => {
               const active = pathname?.startsWith(item.href);
               return (
                 <Link
@@ -151,15 +175,6 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
 
         {/* Footer Area */}
         <div className="border-t border-slate-800/80 pt-4 px-2 space-y-3">
-          {/* SGP Live Status */}
-          <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/60 px-2.5 py-1.5 text-[11px]">
-            <div className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-slate-300 font-medium">SGP Vibe</span>
-            </div>
-            <span className="text-[10px] text-emerald-400 font-mono">Conectado</span>
-          </div>
-
           {/* User Info */}
           <div className="flex items-center justify-between">
             <div className="min-w-0 pr-2">
@@ -167,8 +182,8 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
               <p className="text-[10px] text-cyan-400/80 font-mono">{me?.role}</p>
             </div>
             <button
-              onClick={() => {
-                clearSession();
+              onClick={async () => {
+                await apiLogout();
                 router.push('/login');
               }}
               title="Encerrar sessão"

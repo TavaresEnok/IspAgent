@@ -5,18 +5,19 @@ import { AIProvider, ComposeReplyInput, IntentClassification, ReceiptAnalysisRes
 export const KEYWORD_RULES: Array<{ intent: Intent; keywords: string[] }> = [
   { intent: 'SEM_CONEXAO', keywords: ['sem internet', 'sem conexão', 'sem conexao', 'caiu a internet', 'não conecta', 'nao conecta', 'sem sinal', 'caiu a rede', 'não está funcionando'] },
   { intent: 'INTERNET_LENTA', keywords: ['lenta', 'lentidão', 'lentidao', 'devagar', 'travando', 'ruim', 'internet ruim', 'sinal ruim', 'internet pessima', 'conexao ruim', 'velocidade baixa', 'muito lento', 'muito lenta'] },
-  { intent: 'QUEDAS', keywords: ['cai toda hora', 'fica caindo', 'oscilando', 'quedas', 'reconectando', 'instável', 'instavel'] },
+  { intent: 'QUEDAS', keywords: ['cai toda hora', 'caindo', 'caiu de novo', 'fica caindo', 'oscilando', 'oscilação', 'oscilacao', 'quedas', 'reconectando', 'instável', 'instavel'] },
   { intent: 'SEGUNDA_VIA', keywords: ['segunda via', '2 via', '2ª via', 'boleto', 'pdf', 'baixar boleto', 'baixar fatura', 'copia do boleto', 'link do boleto', 'quero o pdf', 'link pdf', 'gerar pdf', 'sem ser o link', 'pdf do boleto', 'outras solicitações', 'outras solicitacoes', 'minhas solicitações', 'minhas solicitacoes'] },
   { intent: 'PAGAMENTO', keywords: ['paguei', 'pagamento', 'comprovante', 'pix', 'chave pix', 'codigo pix', 'código pix', 'pagar', 'copia e cola', 'gere o código pix', 'gerar pix', 'eu pedi o pix', 'pedi o pix', 'qrcode', 'qr code', 'qrcod', 'cade o pix', 'cadê o pix'] },
+  { intent: 'PLANO', keywords: ['meu plano', 'qual plano', 'plano contratado', 'saber meu plano', 'saber o meu plano', 'consultar plano', 'meu pacote', 'qual a velocidade do meu plano', 'velocidade do meu plano', 'valor do plano', 'valor do meu plano', 'preço do plano', 'preco do plano', 'quanto pago']  },
   { intent: 'BLOQUEIO', keywords: ['bloqueado', 'bloqueio', 'desbloquear', 'corte'] },
   { intent: 'FINANCEIRO', keywords: ['fatura', 'financeiro', 'conta', 'dívida', 'divida', 'atraso', 'débito', 'debito', 'valor'] },
   { intent: 'UPGRADE', keywords: ['upgrade', 'aumentar velocidade', 'mais velocidade'] },
-  { intent: 'PLANO', keywords: ['meu plano', 'qual plano', 'plano contratado', 'saber meu plano', 'saber o meu plano', 'consultar plano', 'meu pacote', 'qual a velocidade do meu plano', 'velocidade do meu plano'] },
   { intent: 'CONTRATACAO', keywords: ['contratar', 'nova instalação', 'nova instalacao', 'assinar'] },
   { intent: 'STATUS_CHAMADO', keywords: ['status do chamado', 'andamento do chamado', 'meu chamado', 'ordem de serviço', 'ordem de servico', 'o.s'] },
   { intent: 'CHAMADO', keywords: ['abrir chamado', 'abrir um chamado', 'abertura de chamado', 'visita técnica', 'visita tecnica'] },
   { intent: 'CANCELAMENTO', keywords: ['cancelar', 'cancelamento'] },
-  { intent: 'SUPORTE_INTERNET', keywords: ['qual meu sinal', 'meu sinal', 'testar sinal', 'qual o sinal', 'wifi', 'wi-fi'] },
+  // Sem "internet" solto de propósito: "fatura da internet" não é problema de rede.
+  { intent: 'SUPORTE_INTERNET', keywords: ['qual meu sinal', 'meu sinal', 'testar sinal', 'qual o sinal', 'wifi', 'wi-fi', 'internet não', 'internet nao', 'problema na internet', 'problema com a internet', 'sem navegar'] },
 ];
 
 function formatCustomerFirstName(fullName: string | null | undefined): string {
@@ -24,6 +25,10 @@ function formatCustomerFirstName(fullName: string | null | undefined): string {
   const first = fullName.trim().split(/\s+/)[0] || '';
   if (!first) return '';
   return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+function formatCents(cents: number): string {
+  return `R$ ${(cents / 100).toFixed(2).replace('.', ',')}`;
 }
 
 /**
@@ -62,7 +67,8 @@ export class MockAIProvider implements AIProvider {
     const msgLower = (input.customerMessage ?? '').toLowerCase();
     const alreadyRebooted = /(?:j[aá]\s*(?:reiniciei|desliguei|fiz|tirei|resetei|tudo)|mentirosa|essa porra|de novo)/i.test(msgLower);
 
-    const company = input.persona?.companyName?.trim() || 'Vibe Telecom';
+    const company = input.persona?.companyName?.trim() || input.providerName?.trim() || 'seu provedor de internet';
+    const canTicket = Boolean(input.persona?.canCreateTicket);
     const assistant = input.persona?.assistantName?.trim() || 'assistente virtual';
 
     if (input.cpfNotFound) {
@@ -93,14 +99,15 @@ export class MockAIProvider implements AIProvider {
     const opticalFact = input.facts.find((f) => f.label.includes('óptica') || f.label.includes('fibra') || f.label.includes('sinal') || f.label === 'Sinal óptico na ONT');
     const pdfFact = input.facts.find((f) => f.label.includes('PDF'));
     const pixFact = input.facts.find((f) => f.label.includes('PIX'));
-    const amountFact = input.facts.find((f) => f.label.includes('Valor'));
+    const amountFact = input.facts.find((f) => f.label === 'Valor da fatura');
     const dueFact = input.facts.find((f) => f.label.includes('Vencimento'));
     const statusFact = input.facts.find((f) => f.label === 'Status da fatura');
     const digitableFact = input.facts.find((f) => f.label.includes('digitável'));
 
     // Cenário Multi-Intent: Cliente pediu suporte de rede E segunda via/PIX no mesmo turno
     if (opticalFact && (pdfFact || pixFact || amountFact)) {
-      let reply = `${greeting}verifiquei a sua conexão e a fibra óptica está recebendo sinal normal da nossa rede.\n\nE sobre a sua fatura, localizei o boleto`;
+      const networkText = this.networkReply(input.facts, canTicket) ?? 'verifiquei as informações da sua conexão.';
+      let reply = `${greeting}${networkText}\n\nE sobre a sua fatura, localizei o boleto`;
       if (amountFact?.value) reply += ` no valor de **${amountFact.value}**`;
       if (dueFact?.value) reply += ` com vencimento em **${dueFact.value}**`;
       if (statusFact?.value) reply += ` (${statusFact.value})`;
@@ -141,23 +148,47 @@ export class MockAIProvider implements AIProvider {
 
     // Se o cliente já avisou que reiniciou ou está irritado com repetição
     if (alreadyRebooted) {
-      return `${greeting}compreendo perfeitamente e peço desculpas. Como você já reiniciou o roteador e o sinal do Wi-Fi está bom, isso indica que o problema não é com o seu equipamento interno. No momento a abertura de novos chamados está pausada para manutenção, mas se precisar emitir segunda via, gerar PIX ou consultar seu plano, estou à disposição!`;
+      const next = canTicket
+        ? 'Posso abrir um chamado para a equipe técnica verificar de perto — quer que eu siga com isso?'
+        : 'Vou deixar registrado para a nossa equipe; se preferir, posso te passar para um atendente humano.';
+      return `${greeting}compreendo perfeitamente e peço desculpas pelo transtorno. Como você já fez o procedimento no seu equipamento, não vou pedir para repetir. ${next}`;
     }
 
-    const network = input.followUp ? this.networkExplanation(input.facts) : this.networkReply(input.facts);
+    const network = input.followUp ? this.networkExplanation(input.facts, canTicket) : this.networkReply(input.facts, canTicket);
     if (network) return `${greeting}${network}`;
 
-    // Plano de internet
-    const planFact = input.facts.find((f) => f.label.includes('plano') || f.label.includes('Plano'));
-    if (planFact) {
-      return `${greeting}o seu plano atual contratado é o **${planFact.value}**. Se precisar de 2ª via da fatura ou código PIX para pagamento, é só me pedir!`;
+    // Base de conhecimento: a orientação do artigo mais relevante (não só o título).
+    const kbGuidance = input.facts.find((f) => f.label === 'Orientação da base de conhecimento');
+    if (kbGuidance && typeof kbGuidance.value === 'string') {
+      return `${greeting}${kbGuidance.value}`;
     }
 
-    const factLines = input.facts.map((f) => `• **${f.label}:** ${this.formatValue(f.value)}`).join('\n');
+    // Plano de internet (nome + valor/velocidade quando o ERP fornece)
+    const planFact = input.facts.find((f) => f.label === 'Seu plano');
+    if (planFact) {
+      const price = input.facts.find((f) => f.label === 'Valor mensal do plano (centavos)');
+      const down = input.facts.find((f) => f.label === 'Velocidade de download (Mbps)');
+      let reply = `${greeting}o seu plano atual é o **${planFact.value}**`;
+      if (typeof down?.value === 'number' && down.value > 0) reply += `, com **${down.value} Mbps** de download`;
+      if (typeof price?.value === 'number' && price.value > 0) reply += `, no valor mensal de **${formatCents(price.value)}**`;
+      return `${reply}. Se precisar de 2ª via da fatura ou código PIX, é só me pedir!`;
+    }
+
+    const factLines = input.facts.map((f) => this.formatFactLine(f)).join('\n');
     return `${greeting}aqui estão as informações encontradas:\n\n${factLines}`;
   }
 
-  private networkExplanation(facts: ComposeReplyInput['facts']): string | null {
+  /** Labels com sufixo `(centavos)`/`(Mbps)` viram texto em R$/Mbps; o resto usa o valor cru. */
+  private formatFactLine(fact: ComposeReplyInput['facts'][number]): string {
+    const centavos = /^(.*) \(centavos\)$/.exec(fact.label);
+    if (centavos && typeof fact.value === 'number') return `• **${centavos[1]}:** ${formatCents(fact.value)}`;
+    const mbps = /^(.*) \(Mbps\)$/.exec(fact.label);
+    if (mbps && typeof fact.value === 'number') return `• **${mbps[1]}:** ${fact.value} Mbps`;
+    return `• **${fact.label}:** ${this.formatValue(fact.value)}`;
+  }
+
+  /** Cliente pediu explicação ("que sinal?", "como assim?") logo depois do diagnóstico. */
+  private networkExplanation(facts: ComposeReplyInput['facts'], canTicket = false): string | null {
     const status = facts.find((f) => f.label === 'Status da conexão')?.value;
     if (typeof status !== 'string') return null;
     if (facts.some((f) => f.label === 'Escopo do incidente')) {
@@ -166,10 +197,13 @@ export class MockAIProvider implements AIProvider {
     if (status === 'HEALTHY') {
       return 'pelos dados da nossa central, a fibra óptica está chegando perfeitamente na sua residência com sinal estável. Quando isso acontece, costuma ser uma oscilação momentânea do Wi-Fi ou congestionamento de aparelhos conectados.';
     }
-    return 'a sua conexão de fibra óptica chega com sinal de luz até o modem. No momento estamos monitorando a estabilidade da sua linha diretamente pelo sistema.';
+    if (status === 'OFFLINE') {
+      return 'o seu aparelho da fibra (o que fica perto do roteador) não está conversando com a nossa rede agora — pode estar desligado da tomada, com o cabo solto/dobrado ou com defeito.' + (canTicket ? ' Quer que eu abra um chamado para um técnico?' : '');
+    }
+    return 'a internet chega por um cabo de fibra que leva o sinal como luz até a sua casa — e essa luz está chegando mais fraca ou instável do que deveria. Isso não se resolve reiniciando o roteador; costuma ser cabo dobrado, conector sujo ou problema no cabo da rua.' + (canTicket ? ' Quer que eu abra um chamado para um técnico verificar?' : '');
   }
 
-  private networkReply(facts: ComposeReplyInput['facts']): string | null {
+  private networkReply(facts: ComposeReplyInput['facts'], canTicket = false): string | null {
     const status = facts.find((f) => f.label === 'Status da conexão')?.value;
     if (typeof status !== 'string') return null;
 
@@ -181,7 +215,9 @@ export class MockAIProvider implements AIProvider {
       case 'HEALTHY':
         return 'verifiquei a sua conexão e a fibra óptica está recebendo sinal normal da nossa rede. Se você notar lentidão no Wi-Fi, pode ser uma oscilação temporária de frequência.';
       case 'DEGRADED':
-        return 'verifiquei a sua conexão e detectei uma oscilação no sinal óptico que chega até você.';
+        return 'verifiquei a sua conexão e detectei uma oscilação no sinal da fibra que chega até você — isso explica as quedas e não se resolve reiniciando o roteador.' + (canTicket ? ' Quer que eu abra um chamado para um técnico verificar?' : '');
+      case 'CRITICAL':
+        return 'verifiquei a sua conexão e ela está com um problema sério no sinal da fibra.' + (canTicket ? ' Recomendo a visita de um técnico — posso abrir o chamado agora?' : ' Vou precisar que a nossa equipe técnica verifique.');
       case 'OFFLINE':
         return 'verifiquei aqui que o seu equipamento está sem comunicação com a central no momento. Verifique se o cabo óptico e a fonte de energia estão firmes.';
       default:
@@ -195,17 +231,14 @@ export class MockAIProvider implements AIProvider {
     return String(value);
   }
 
-  async transcribeAudio(audioBase64: string, mimeType = 'audio/ogg'): Promise<string> {
-    return 'Olá, minha internet está com sinal fraco e gostaria de verificar minha conexão.';
+  /** Sem IA real não há transcrição: lançar faz o canal responder "não consegui ouvir", nunca inventar a fala. */
+  async transcribeAudio(_audioBase64: string, _mimeType = 'audio/ogg'): Promise<string> {
+    throw new Error('Transcrição de áudio indisponível sem um provedor de IA real configurado.');
   }
 
-  async analyzeReceipt(fileBase64: string, mimeType = 'image/jpeg'): Promise<ReceiptAnalysisResult> {
-    return {
-      isValid: true,
-      amount: 99.9,
-      date: new Date().toLocaleDateString('pt-BR'),
-      recipient: 'Vibe Telecom',
-      notes: 'Comprovante bancário PIX validado com sucesso',
-    };
+  /** Sem IA real não há leitura de comprovante: nunca declarar um comprovante válido por padrão. */
+  async analyzeReceipt(_fileBase64: string, _mimeType = 'image/jpeg'): Promise<ReceiptAnalysisResult> {
+    return { isValid: false, notes: 'Leitura automática de comprovante indisponível no modo DEMO — um atendente vai conferir.' };
   }
+
 }

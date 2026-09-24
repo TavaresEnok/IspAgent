@@ -20,7 +20,8 @@ export class RealtimeEventsService {
 
   streamForTenant(tenantId: string): Observable<{ data: any }> {
     return this.subject.asObservable().pipe(
-      filter((e) => !e.tenantId || e.tenantId === tenantId),
+      // Evento sem tenant não vai para ninguém (fail-closed).
+      filter((e) => Boolean(e.tenantId) && e.tenantId === tenantId),
       map((e) => ({
         data: {
           type: e.type,

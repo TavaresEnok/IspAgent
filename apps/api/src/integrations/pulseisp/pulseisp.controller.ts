@@ -31,6 +31,7 @@ export class PulseIspController {
   ) {}
 
   @Get('connection')
+  @Roles('TENANT_ADMIN', 'SUPER_ADMIN')
   connection() {
     return this.connections.getView(currentTenantId() as string);
   }

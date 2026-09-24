@@ -1,20 +1,24 @@
 import { Body, Controller, Get, Post, Query } from '@nestjs/common';
-import { IsOptional, IsString, MinLength } from 'class-validator';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { KnowledgeService } from './knowledge.service';
 import { currentTenantId } from '../common/tenant-context';
+import { Roles } from '../common/decorators/roles.decorator';
 
 class CreateKnowledgeDocDto {
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   title!: string;
 
   @IsString()
   @MinLength(1)
+  @MaxLength(20000)
   content!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   source?: string;
 }
 
@@ -35,7 +39,9 @@ export class KnowledgeController {
     return this.knowledge.search(query ?? '');
   }
 
+  // O conteúdo da KB vira "fato" para o agente: quem escreve aqui influencia o que o cliente lê.
   @Post()
+  @Roles('SUPERVISOR')
   async create(@Body() dto: CreateKnowledgeDocDto) {
     const tenantId = currentTenantId() as string;
     return this.db.client.knowledgeDocument.create({

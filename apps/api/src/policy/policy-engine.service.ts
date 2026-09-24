@@ -81,6 +81,16 @@ export class PolicyEngineService {
     };
   }
 
+  /** Limites por turno/conversa da policy do tenant — aplicados pelo executor e pelo orquestrador. */
+  async getLimits(): Promise<{ maxToolCallsPerTurn: number; maxTokensPerTurn: number; handoffAfterFailures: number }> {
+    const tenantId = currentTenantId();
+    if (!tenantId) {
+      throw new Error('[policy-engine] leitura de limites requer contexto de tenant ativo.');
+    }
+    const { maxToolCallsPerTurn, maxTokensPerTurn, handoffAfterFailures } = await this.getConfig(tenantId);
+    return { maxToolCallsPerTurn, maxTokensPerTurn, handoffAfterFailures };
+  }
+
   private requiresConfirmation(
     action: string,
     tier: RiskTier,

@@ -1,4 +1,4 @@
-# Build de apps/api (usado também pelo container ispagent-worker, com CMD diferente).
+# Build de apps/api (usado também pelos containers ispagent-worker e ispagent-migrate, com CMD diferente).
 # Contexto de build = raiz do monorepo (necessário para o workspace pnpm resolver @ispagent/shared).
 
 FROM node:20-alpine AS base
@@ -30,5 +30,9 @@ COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/packages/shared ./packages/shared
 COPY --from=build /repo/apps/api ./apps/api
 WORKDIR /repo/apps/api
+# Não roda como root: um bug na API não vira acesso root ao container. Os arquivos (root:root, leitura
+# para todos) bastam — a aplicação não grava em disco. O Prisma CLI (usado pelo serviço de migração)
+# continua na imagem, por isso as dependências de desenvolvimento não são podadas.
+USER node
 EXPOSE 3001 3002
 CMD ["node", "dist/main.js"]

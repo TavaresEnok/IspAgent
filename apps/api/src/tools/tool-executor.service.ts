@@ -10,6 +10,22 @@ import { ToolDefinition, ToolRunOptions } from './tool.types';
  * evita o problema de variância de `TInput` ao repassar `def` de um método genérico para outro. */
 type ToolDescriptor = { name: string; adapter: string; mode: RunMode; capability: string };
 
+/** Opções da execução + os argumentos (já saneados) que vão para o registro de auditoria. */
+type AuditedOptions = ToolRunOptions & { args?: unknown };
+
+const SENSITIVE_KEY = /pass|token|secret|api[-_]?key|authorization/i;
+
+/** Argumentos gravados na auditoria: JSON-safe e sem valores de chaves sensíveis. */
+function auditArgs(input: unknown): object {
+  try {
+    const json = JSON.stringify(input ?? {}, (key, value) => (SENSITIVE_KEY.test(key) ? '[redacted]' : value));
+    const parsed = JSON.parse(json ?? '{}');
+    return parsed !== null && typeof parsed === 'object' ? parsed : { value: parsed };
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Pipeline obrigatório da seção 4, sem etapa pulável:
  * Tool Request → Schema Validation → Tenant Validation → Policy Engine → Permission Check →
@@ -49,12 +65,28 @@ export class ToolExecutorService {
 
     const toolCallId = randomUUID();
     const startedAt = Date.now();
+    const audited: AuditedOptions = { ...opts, args: auditArgs(rawInput) };
 
     const parsed = def.inputSchema.safeParse(rawInput);
     if (!parsed.success) {
-      return this.finish(def, opts, toolCallId, startedAt, {
+      return this.finish(def, audited, toolCallId, startedAt, {
         status: 'INVALID_INPUT',
         error: { code: 'INVALID_INPUT', message: parsed.error.message },
+        facts: [],
+      });
+    }
+
+    // Limite por turno da policy do tenant (`maxToolCallsPerTurn`): um turno que já usou a cota não roda
+    // mais ferramenta — evita loop de ferramentas e custo descontrolado.
+    const limits = await this.policy.getLimits();
+    const usedInTurn = await this.db.client.toolCall.count({ where: { agentRunId: opts.agentRunId } });
+    if (usedInTurn >= limits.maxToolCallsPerTurn) {
+      return this.finish(def, audited, toolCallId, startedAt, {
+        status: 'BLOCKED_BY_POLICY',
+        error: {
+          code: 'BLOCKED_BY_POLICY',
+          message: `Limite de ${limits.maxToolCallsPerTurn} chamadas de ferramenta por turno atingido (policy do tenant).`,
+        },
         facts: [],
       });
     }
@@ -62,7 +94,7 @@ export class ToolExecutorService {
     const decision = await this.policy.evaluate(def.action, { confirmed: opts.confirmed });
 
     if (!decision.allowed) {
-      return this.finish(def, opts, toolCallId, startedAt, {
+      return this.finish(def, audited, toolCallId, startedAt, {
         status: 'BLOCKED_BY_POLICY',
         error: { code: 'BLOCKED_BY_POLICY', message: decision.reason },
         facts: [],
@@ -70,7 +102,7 @@ export class ToolExecutorService {
     }
 
     if (decision.requiresConfirmation) {
-      return this.finish(def, opts, toolCallId, startedAt, {
+      return this.finish(def, audited, toolCallId, startedAt, {
         status: 'NEEDS_CONFIRMATION',
         error: { code: 'NEEDS_CONFIRMATION', message: decision.reason },
         facts: [],
@@ -82,10 +114,10 @@ export class ToolExecutorService {
         def.execute(parsed.data, { tenantId, idempotencyKey: opts.idempotencyKey }),
         opts.timeoutMs ?? 10_000,
       );
-      return this.finish(def, opts, toolCallId, startedAt, outcome);
+      return this.finish(def, audited, toolCallId, startedAt, outcome);
     } catch (err) {
       const timedOut = err instanceof Error && err.message === 'TOOL_TIMEOUT';
-      return this.finish(def, opts, toolCallId, startedAt, {
+      return this.finish(def, audited, toolCallId, startedAt, {
         status: timedOut ? 'TIMEOUT' : 'UPSTREAM_ERROR',
         error: { code: timedOut ? 'TIMEOUT' : 'UPSTREAM_ERROR', message: err instanceof Error ? err.message : String(err) },
         facts: [],
@@ -107,7 +139,7 @@ export class ToolExecutorService {
 
   private async finish<TOutput>(
     def: ToolDescriptor,
-    opts: ToolRunOptions,
+    opts: AuditedOptions,
     toolCallId: string,
     startedAt: number,
     outcome: {
@@ -137,7 +169,7 @@ export class ToolExecutorService {
         tenantId,
         agentRunId: opts.agentRunId,
         tool: def.name,
-        args: {},
+        args: (opts.args ?? {}) as object,
         status: result.status,
         source: result.source,
         data: (result.data ?? undefined) as object | undefined,

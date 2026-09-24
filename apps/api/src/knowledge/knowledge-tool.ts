@@ -15,11 +15,12 @@ export function createKnowledgeSearchTool(knowledge: KnowledgeService): ToolDefi
       if (results.length === 0) {
         return { status: 'NOT_FOUND', facts: [] };
       }
-      const facts = results.map((r) => ({
-        path: `data.results[${r.id}].title`,
-        label: 'Documento encontrado',
-        value: r.title,
-      }));
+      // Título E conteúdo: só com o conteúdo como fato o modelo pode usar a orientação (e o reply-guard
+      // aceita os números dela, ex.: "30 segundos").
+      const facts = results.slice(0, 3).flatMap((r) => [
+        { path: `data.results[${r.id}].title`, label: 'Documento encontrado', value: r.title },
+        { path: `data.results[${r.id}].content`, label: 'Orientação da base de conhecimento', value: r.content.slice(0, 800) },
+      ]);
       return { status: 'OK', data: { results }, facts };
     },
   };

@@ -1,26 +1,82 @@
-import { Controller, Get, Post, Query, Body, Headers, HttpCode, HttpStatus, Logger, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Logger,
+  NotFoundException,
+  Post,
+  Query,
+  RawBodyRequest,
+  Req,
+} from '@nestjs/common';
+import { Request } from 'express';
+import { Throttle } from '@nestjs/throttler';
+import { ArrayMaxSize, IsArray, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { AgentOrchestratorService } from '../agent/agent-orchestrator.service';
 import { ConversationService } from '../conversation/conversation.service';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { runWithTenant } from '../common/tenant-context';
 import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
+import { downloadWhatsAppMedia, isValidMetaSignature, sendWhatsAppText, whatsappEnabled } from './whatsapp-cloud';
 
+const MEDIA_NOT_UNDERSTOOD =
+  'Não consegui abrir o arquivo que você enviou. Pode me escrever em poucas palavras o que você precisa?';
+
+interface MetaMessage {
+  from?: string;
+  type?: string;
+  text?: { body?: string };
+  audio?: { id?: string; mime_type?: string };
+  voice?: { id?: string; mime_type?: string };
+  image?: { id?: string; mime_type?: string };
+  document?: { id?: string; mime_type?: string };
+  interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } };
+}
+
+interface MetaWebhookBody {
+  entry?: Array<{ changes?: Array<{ value?: { messages?: MetaMessage[] } }> }>;
+}
+
+class BroadcastDto {
+  @IsString()
+  @MinLength(5)
+  @MaxLength(1000)
+  message!: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @Matches(/^\d{10,15}$/, { each: true })
+  phones?: string[];
+}
+
+/**
+ * WhatsApp Cloud API (Meta). É o único canal em que o número PROVA a identidade — justamente por isso o
+ * webhook só aceita requisição assinada pela Meta (`X-Hub-Signature-256`) e o canal fica desligado até
+ * `ISPAGENT_CHANNEL_WHATSAPP_ENABLED=true`. A resposta vai para o cliente pela API da Meta; o corpo HTTP
+ * do webhook nunca carrega conteúdo da conversa.
+ */
 @Controller('public/whatsapp')
 export class WhatsAppController {
   private readonly logger = new Logger(WhatsAppController.name);
 
   constructor(
+    private readonly prisma: PrismaService,
     private readonly orchestrator: AgentOrchestratorService,
     private readonly conversation: ConversationService,
     private readonly db: TenantPrismaService,
     private readonly aiResolver: AiProviderResolverService,
   ) {}
 
-  /**
-   * Endpoint de validação de Webhook do WhatsApp Cloud API (Meta).
-   * Valida hub.verify_token e retorna o hub.challenge em texto puro.
-   */
+  /** Validação do webhook pela Meta: devolve `hub.challenge` se o verify token bater. */
   @Public()
   @Get('webhook')
   verifyWebhook(
@@ -28,156 +84,160 @@ export class WhatsAppController {
     @Query('hub.verify_token') token?: string,
     @Query('hub.challenge') challenge?: string,
   ) {
-    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || 'ispagent_whatsapp_secret';
-    if (mode === 'subscribe' && token === expectedToken) {
-      this.logger.log('WhatsApp Webhook validado com sucesso pela Meta.');
-      return challenge;
-    }
+    const expected = process.env.ISPAGENT_WHATSAPP_VERIFY_TOKEN;
+    if (!whatsappEnabled() || !expected) throw new NotFoundException();
+    if (mode === 'subscribe' && token === expected) return challenge;
     throw new BadRequestException('Token de validação inválido');
   }
 
-  /**
-   * Recebe mensagens do WhatsApp (suporta texto, áudio transcrito por IA e comprovantes com OCR).
-   */
   @Public()
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
-  async handleIncomingMessage(@Body() body: any, @Query('tenantId') queryTenantId?: string) {
-    this.logger.log(`WhatsApp webhook recebido: ${JSON.stringify(body).slice(0, 300)}`);
+  async handleIncoming(
+    @Req() req: RawBodyRequest<Request>,
+    @Body() body: MetaWebhookBody,
+    @Headers('x-hub-signature-256') signature?: string,
+  ) {
+    if (!whatsappEnabled()) throw new NotFoundException();
+    if (!isValidMetaSignature(req.rawBody, signature)) throw new ForbiddenException('Assinatura inválida.');
 
-    const tenantId = queryTenantId || process.env.DEFAULT_TENANT_ID || 'tnt_vibe';
-    const ai = await this.aiResolver.resolve(tenantId);
-
-    let fromNumber = '';
-    let messageText = '';
-    let isAudio = false;
-    let isImage = false;
-
-    // 1. Extração do remetente e tipo de mensagem (Meta Cloud API)
-    if (body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
-      const msg = body.entry[0].changes[0].value.messages[0];
-      fromNumber = msg.from;
-      if (msg.type === 'text') {
-        messageText = msg.text?.body || '';
-      } else if (msg.type === 'audio' || msg.type === 'voice') {
-        isAudio = true;
-        const audioBase64 = msg.audio?.data || msg.voice?.data || 'mock_audio_data';
-        if (typeof ai.transcribeAudio === 'function') {
-          messageText = await ai.transcribeAudio(audioBase64, msg.audio?.mime_type || 'audio/ogg');
-        } else {
-          messageText = 'Olá, estou com problemas na minha internet e gostaria de suporte.';
-        }
-        messageText = `[Áudio transcrito do cliente]: "${messageText}"`;
-      } else if (msg.type === 'image') {
-        isImage = true;
-        const imageBase64 = msg.image?.data || 'mock_image_data';
-        if (typeof ai.analyzeReceipt === 'function') {
-          const receipt = await ai.analyzeReceipt(imageBase64, msg.image?.mime_type || 'image/jpeg');
-          messageText = `[Comprovante enviado pelo cliente]: Valor R$ ${receipt.amount || '0.00'}, Data: ${receipt.date || 'hoje'}. ${receipt.notes || ''}`;
-        } else {
-          messageText = '[Comprovante de pagamento anexado pelo cliente]';
-        }
-      } else if (msg.type === 'interactive') {
-        messageText = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
-      }
-    } 
-    // 2. Formato Z-API / Evolution / Webhook genérico
-    else if (body?.phone || body?.sender || body?.from) {
-      fromNumber = String(body.phone || body.sender || body.from).replace(/\D/g, '');
-      if (body.audio || body.audioUrl || body.voice) {
-        isAudio = true;
-        const audioData = body.audio || body.voice || 'mock_audio';
-        if (typeof ai.transcribeAudio === 'function') {
-          messageText = await ai.transcribeAudio(audioData, 'audio/ogg');
-        } else {
-          messageText = 'Olá, gostaria de verificar a minha conexão.';
-        }
-        messageText = `[Áudio transcrito do cliente]: "${messageText}"`;
-      } else if (body.image || body.imageUrl) {
-        isImage = true;
-        const imgData = body.image || 'mock_image';
-        if (typeof ai.analyzeReceipt === 'function') {
-          const receipt = await ai.analyzeReceipt(imgData, 'image/jpeg');
-          messageText = `[Comprovante enviado pelo cliente]: Valor R$ ${receipt.amount || '0.00'}, Data: ${receipt.date || 'hoje'}. ${receipt.notes || ''}`;
-        } else {
-          messageText = '[Comprovante de pagamento anexado pelo cliente]';
-        }
-      } else {
-        messageText = body.text || body.message || body.body || '';
-      }
+    const tenantId = process.env.ISPAGENT_WHATSAPP_TENANT_ID;
+    if (!tenantId || !(await this.prisma.tenant.findUnique({ where: { id: tenantId } }))) {
+      this.logger.error('ISPAGENT_WHATSAPP_TENANT_ID ausente ou inexistente — mensagem do WhatsApp descartada.');
+      return { status: 'ignored' };
     }
 
-    if (!fromNumber || !messageText) {
-      return { status: 'ignored_or_status_ack' };
+    const messages = (body?.entry ?? []).flatMap((e) => e?.changes ?? []).flatMap((c) => c?.value?.messages ?? []);
+    for (const msg of messages) {
+      const from = String(msg.from ?? '').replace(/\D/g, '');
+      if (!/^\d{10,15}$/.test(from)) continue;
+      try {
+        await runWithTenant(tenantId, () => this.process(tenantId, from, msg));
+      } catch (err) {
+        this.logger.error(`Falha ao processar mensagem do WhatsApp: ${err instanceof Error ? err.message : err}`);
+      }
     }
-
-    return runWithTenant(tenantId, async () => {
-      const conv = await this.conversation.findOrCreateConversation('WHATSAPP', fromNumber);
-      const decision = await this.orchestrator.handleMessage(conv.id, messageText);
-
-      const lastAiMsg = await this.db.client.message.findFirst({
-        where: { conversationId: conv.id, role: 'AGENT' },
-        orderBy: { createdAt: 'desc' },
-      });
-
-      this.logger.log(`Resposta gerada para WhatsApp (${fromNumber}): ${lastAiMsg?.content?.slice(0, 100)}...`);
-
-      return {
-        status: 'processed',
-        conversationId: conv.id,
-        isAudio,
-        isImage,
-        reply: lastAiMsg?.content || (decision ? `Decisão: ${decision.outcome}` : 'Mensagem recebida'),
-        decision,
-      };
-    });
+    // A Meta só precisa do 200; nada da conversa volta aqui.
+    return { status: 'received' };
   }
 
-  /**
-   * Disparo proativo de avisos de manutenção na PON / Região para clientes via WhatsApp.
-   */
-  @Public()
-  @Post('broadcast-maintenance')
-  @HttpCode(HttpStatus.OK)
-  async broadcastMaintenance(
-    @Body() body: { tenantId?: string; ponId?: string; message: string; phones?: string[] },
-  ) {
-    const tenantId = body.tenantId || process.env.DEFAULT_TENANT_ID || 'tnt_vibe';
-    const alertMessage = body.message?.trim();
-    if (!alertMessage) throw new BadRequestException('Mensagem de aviso obrigatória.');
+  private async process(tenantId: string, from: string, msg: MetaMessage) {
+    const conv = await this.conversation.findOrCreateConversation('WHATSAPP', from);
+    const text = await this.toText(tenantId, msg);
 
-    return runWithTenant(tenantId, async () => {
-      let targetPhones = body.phones || [];
-      if (!targetPhones.length) {
-        // Se não especificou telefones, busca conversas ativas no canal WhatsApp
-        const recentConvs = await this.db.client.conversation.findMany({
-          where: { channel: 'WHATSAPP' },
-          take: 50,
-          select: { channelUserId: true },
-        });
-        targetPhones = recentConvs.map((c) => c.channelUserId);
+    if (text === null) {
+      await this.conversation.appendMessage(conv.id, 'CUSTOMER', `[${msg.type ?? 'mensagem'} recebido — não foi possível processar]`);
+      if (conv.status !== 'HUMAN_ACTIVE') {
+        await this.conversation.appendMessage(conv.id, 'AGENT', MEDIA_NOT_UNDERSTOOD);
+        await sendWhatsAppText(from, MEDIA_NOT_UNDERSTOOD);
       }
+      return;
+    }
+    if (!text.trim()) return;
 
-      const results = [];
-      for (const phone of targetPhones) {
-        try {
-          const conv = await this.conversation.findOrCreateConversation('WHATSAPP', phone);
-          const formattedMsg = `📢 *AVISO DE MANUTENÇÃO PROATIVA - VIBE TELECOM*\n\n${alertMessage}`;
-          const msg = await this.conversation.appendMessage(conv.id, 'AGENT', formattedMsg);
-          results.push({ phone, status: 'sent', messageId: msg.id });
-        } catch (e: any) {
-          results.push({ phone, status: 'failed', error: e.message });
-        }
-      }
+    const decision = await this.orchestrator.handleMessage(conv.id, text.slice(0, 2000));
+    if (!decision) return; // humano assumiu: quem responde é o atendente
 
-      this.logger.log(`Disparo proativo de manutenção enviado para ${results.length} destinatários.`);
-      return {
-        broadcast: true,
-        totalRecipients: results.length,
-        dispatchedAt: new Date().toISOString(),
-        results,
-      };
+    const reply = await this.db.client.message.findFirst({
+      where: { conversationId: conv.id, role: { in: ['AGENT', 'SYSTEM'] } },
+      orderBy: { createdAt: 'desc' },
     });
+    if (reply && !(await sendWhatsAppText(from, reply.content))) {
+      this.logger.warn('Resposta não enviada ao WhatsApp (canal sem PHONE_NUMBER_ID/ACCESS_TOKEN ou erro da Meta).');
+    }
+  }
+
+  /** Texto do turno; `null` = mídia que não deu para processar (nunca inventar o conteúdo). */
+  private async toText(tenantId: string, msg: MetaMessage): Promise<string | null> {
+    switch (msg.type) {
+      case 'text':
+        return msg.text?.body ?? '';
+      case 'interactive':
+        return msg.interactive?.button_reply?.title ?? msg.interactive?.list_reply?.title ?? '';
+      case 'audio':
+      case 'voice': {
+        const media = msg.audio?.id ?? msg.voice?.id;
+        const file = media ? await downloadWhatsAppMedia(media).catch(() => null) : null;
+        const ai = await this.aiResolver.resolve(tenantId);
+        if (!file || typeof ai.transcribeAudio !== 'function') return null;
+        const transcription = (await ai.transcribeAudio(file.base64, file.mimeType).catch(() => '')).trim();
+        return transcription ? `[Áudio transcrito]: ${transcription}` : null;
+      }
+      case 'image':
+      case 'document': {
+        const media = msg.image?.id ?? msg.document?.id;
+        const file = media ? await downloadWhatsAppMedia(media).catch(() => null) : null;
+        if (!file) return null;
+        const ai = await this.aiResolver.resolve(tenantId);
+        const receipt =
+          typeof ai.analyzeReceipt === 'function' ? await ai.analyzeReceipt(file.base64, file.mimeType).catch(() => null) : null;
+        if (receipt?.isValid) {
+          const amount = receipt.amount ? `R$ ${receipt.amount.toFixed(2).replace('.', ',')}` : 'valor não identificado';
+          return `[Comprovante de pagamento enviado pelo cliente — leitura automática, não confirmada: ${amount}, ${receipt.date ?? 'data não identificada'}]. Já efetuei o pagamento, segue o comprovante.`;
+        }
+        return '[Arquivo enviado pelo cliente — a leitura automática não reconheceu um comprovante de pagamento].';
+      }
+      default:
+        return null;
+    }
   }
 }
 
+/**
+ * Aviso proativo (ex.: manutenção numa PON) para clientes que já conversaram pelo WhatsApp. Rota de
+ * STAFF: pública, qualquer um injetaria mensagens (golpe de PIX) em todas as conversas do provedor.
+ */
+@Controller('whatsapp')
+export class WhatsAppBroadcastController {
+  private readonly logger = new Logger(WhatsAppBroadcastController.name);
+
+  constructor(
+    private readonly db: TenantPrismaService,
+    private readonly conversation: ConversationService,
+  ) {}
+
+  @Post('broadcast-maintenance')
+  @Roles('SUPERVISOR')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  async broadcastMaintenance(@Body() dto: BroadcastDto, @Req() req: Request) {
+    const tenantId = req.user!.tenantId;
+    const tenant = await this.db.client.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
+    const brand = tenant?.name.replace(/\s*\(.*\)\s*$/, '').trim().toUpperCase() || 'SEU PROVEDOR';
+
+    // Só números que já têm conversa no WhatsApp deste tenant (sem criar contato novo).
+    const known = await this.db.client.conversation.findMany({
+      where: { channel: 'WHATSAPP', ...(dto.phones?.length ? { channelUserId: { in: dto.phones } } : {}) },
+      distinct: ['channelUserId'],
+      take: 500,
+      select: { channelUserId: true },
+    });
+
+    const text = `📢 *AVISO - ${brand}*\n\n${dto.message.trim()}`;
+    const results: Array<{ phone: string; status: 'sent' | 'recorded' | 'failed' }> = [];
+    for (const { channelUserId: phone } of known) {
+      try {
+        const conv = await this.conversation.findOrCreateConversation('WHATSAPP', phone);
+        await this.conversation.appendMessage(conv.id, 'AGENT', text);
+        results.push({ phone, status: (await sendWhatsAppText(phone, text)) ? 'sent' : 'recorded' });
+      } catch {
+        results.push({ phone, status: 'failed' });
+      }
+    }
+
+    await this.db.client.auditLog.create({
+      data: {
+        tenantId,
+        actorType: 'USER',
+        actorId: req.user!.userId,
+        action: 'whatsapp.broadcast',
+        entityType: 'Tenant',
+        entityId: tenantId,
+        metadata: { recipients: results.length, sent: results.filter((r) => r.status === 'sent').length },
+      },
+    });
+    this.logger.log(`Aviso proativo registrado para ${results.length} conversas.`);
+    return { broadcast: true, totalRecipients: results.length, dispatchedAt: new Date().toISOString(), results };
+  }
+}

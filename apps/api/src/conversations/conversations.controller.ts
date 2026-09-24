@@ -1,21 +1,28 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Query, Req } from '@nestjs/common';
+import { ConversationStatus, Prisma } from '@prisma/client';
+import { ROLE_HIERARCHY, Role } from '@ispagent/shared';
 import { Request } from 'express';
-import { IsString, MinLength } from 'class-validator';
+import { IsString, MaxLength, MinLength } from 'class-validator';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { ConversationService } from '../conversation/conversation.service';
+import { Roles } from '../common/decorators/roles.decorator';
+import { maskDocument } from '../common/mask-document';
 
 class SendHumanMessageDto {
   @IsString()
   @MinLength(1)
+  @MaxLength(4000)
   content!: string;
 }
 
 /**
  * Endpoints de staff (JWT obrigatório — guard global, ver AuthModule). Lista/detalhe de conversa
  * alimentam as telas "Conversas" e "Detalhe da conversa" (seção 10.1), incluindo a timeline de tool
- * calls e decisões de policy que o detalhe exige.
+ * calls e decisões de policy que o detalhe exige. Leitura exige ANALYST+ (há dado pessoal do cliente);
+ * responder ao cliente exige AGENT+.
  */
 @Controller('conversations')
+@Roles('ANALYST')
 export class ConversationsController {
   constructor(
     private readonly db: TenantPrismaService,
@@ -28,20 +35,28 @@ export class ConversationsController {
     @Query('pageSize') pageSize = '20',
     @Query('status') status?: string,
     @Query('search') search?: string,
+    @Req() req?: Request,
   ) {
     const take = Math.min(Number(pageSize) || 20, 100);
     const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
 
-    const where: any = {};
+    const role = req?.user?.role;
+    const where: Prisma.ConversationWhereInput = {};
     if (status && status !== 'ALL') {
-      where.status = status;
+      if (!(Object.values(ConversationStatus) as string[]).includes(status)) {
+        throw new BadRequestException('Status inválido.');
+      }
+      where.status = status as ConversationStatus;
     }
     if (search && search.trim()) {
-      const q = search.trim();
+      const q = search.trim().slice(0, 80);
       where.OR = [
         { channelUserId: { contains: q } },
         { customer: { name: { contains: q, mode: 'insensitive' } } },
-        { customer: { document: { contains: q } } },
+        // Buscar por CPF só quem pode ver o CPF (SUPERVISOR+); abaixo disso a busca revelaria o documento.
+        ...(role && ROLE_HIERARCHY[role as Role] >= ROLE_HIERARCHY.SUPERVISOR
+          ? [{ customer: { document: { contains: q.replace(/\D/g, '') || q } } }]
+          : []),
       ];
     }
 
@@ -56,7 +71,10 @@ export class ConversationsController {
       this.db.client.conversation.count({ where }),
     ]);
 
-    return { items, total, page: Number(page) || 1, pageSize: take };
+    const masked = items.map((c) =>
+      c.customer ? { ...c, customer: { ...c.customer, document: maskDocument(c.customer.document, role) } } : c,
+    );
+    return { items: masked, total, page: Number(page) || 1, pageSize: take };
   }
 
   @Get(':id/copilot-suggestion')
@@ -78,11 +96,11 @@ export class ConversationsController {
 
     let suggestion = `${greeting}Aqui é do suporte ao cliente. Estou assumindo o seu atendimento agora. `;
     if (/lenta|lentid[aã]o|ruim|sinal|wifi/i.test(lastCustomerMsg)) {
-      suggestion += 'Vi que você estava verificando sua conexão. Nosso diagnóstico de rede mostrou sinal óptico normal na fibra, mas vamos realizar juntos alguns testes no seu roteador para normalizar agora mesmo.';
+      suggestion += 'Vi que você está com problema na conexão. Vou verificar agora o sinal da sua fibra e, se precisar, fazemos juntos alguns testes no seu roteador.';
     } else if (/pix|boleto|fatura|pdf/i.test(lastCustomerMsg)) {
       suggestion += 'Vi que você precisa da sua fatura ou código de pagamento. Já estou com os seus dados em tela para te auxiliar de imediato.';
     } else if (/cancelar|cancelamento/i.test(lastCustomerMsg)) {
-      suggestion += 'Lamento saber da sua intenção de cancelamento. Gostaria muito de entender o que aconteceu e ver como podemos aplicar uma condição especial para você continuar com a gente.';
+      suggestion += 'Lamento saber da sua intenção de cancelamento. Gostaria muito de entender o que aconteceu e ver o que podemos fazer para você continuar com a gente.';
     } else {
       suggestion += 'Como posso te auxiliar a resolver essa questão hoje?';
     }
@@ -95,7 +113,7 @@ export class ConversationsController {
   }
 
   @Get(':id')
-  async detail(@Param('id') id: string) {
+  async detail(@Param('id') id: string, @Req() req: Request) {
     const conversation = await this.db.client.conversation.findUnique({
       where: { id },
       include: {
@@ -109,6 +127,9 @@ export class ConversationsController {
       },
     });
     if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    if (conversation.customer) {
+      conversation.customer.document = maskDocument(conversation.customer.document, req.user?.role);
+    }
     return conversation;
   }
 
@@ -119,6 +140,7 @@ export class ConversationsController {
    * como humano" enquanto a IA ainda está no comando, isso seria os dois falando ao mesmo tempo.
    */
   @Post(':id/messages')
+  @Roles('AGENT')
   async sendHumanMessage(@Param('id') id: string, @Body() dto: SendHumanMessageDto, @Req() req: Request) {
     const conv = await this.db.client.conversation.findUnique({ where: { id } });
     if (!conv) throw new NotFoundException('Conversa não encontrada');

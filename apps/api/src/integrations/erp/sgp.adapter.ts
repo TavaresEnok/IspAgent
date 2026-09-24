@@ -50,7 +50,10 @@ export class SGPAdapter implements ERPAdapter {
   ) {}
 
   private getTenantId(): string {
-    return currentTenantId() || 'tnt_vibe';
+    const tenantId = currentTenantId();
+    // Sem contexto de tenant não há para quem gravar: nunca cair num tenant fixo.
+    if (!tenantId) throw new SgpError('SGPAdapter requer contexto de tenant ativo.');
+    return tenantId;
   }
 
   async findCustomer(query: { phone?: string; document?: string; contractId?: string }): Promise<SharedCustomer | null> {
@@ -182,8 +185,11 @@ export class SGPAdapter implements ERPAdapter {
 
       for (const p of rawPlans) {
         if (/^(tv|telefonia)$/i.test(String(p.grupo ?? ''))) continue;
-        const speed = parseSpeedFromDescription(p.descricao) || Math.round(Number(p.download || 0) / 1000) || 100;
-        const upload = Math.round(speed / 2);
+        // O SGP usa unidades inconsistentes em download/upload; a descrição ("VIBE 500 MEGA") é a fonte
+        // confiável. Desconhecido fica 0 — nunca um valor "plausível" inventado.
+        const speed = parseSpeedFromDescription(p.descricao) ?? 0;
+        const symmetric = Number(p.download) > 0 && Number(p.download) === Number(p.upload);
+        const upload = symmetric ? speed : 0;
         const priceCents = Math.round((Number(p.preco || p.valor) || 0) * 100);
         const planId = `sgp_plan_${p.id}`;
 
@@ -437,12 +443,9 @@ export class SGPAdapter implements ERPAdapter {
         lastSeenAt: new Date(lastSeenAt).toISOString(),
       };
     } catch (err) {
+      // Sem resposta do SGP o status é DESCONHECIDO — nunca "online" por padrão.
       this.logger.warn(`Erro ao consultar status de serviço no SGP: ${err}`);
-      return {
-        contractId,
-        online: true,
-        lastSeenAt: new Date().toISOString(),
-      };
+      return null;
     }
   }
 
@@ -471,12 +474,8 @@ export class SGPAdapter implements ERPAdapter {
       this.logger.warn(`getOpticalPower falhou no SGP para contrato ${contractId}: ${err}`);
     }
 
-    return {
-      rxPower: -19.8,
-      txPower: 2.1,
-      status: 'NORMAL',
-      assessment: 'EXCELLENT',
-    };
+    // Sem leitura real da ONU não há sinal a informar (a ferramenta devolve NOT_FOUND).
+    return null;
   }
 
   async requestPromiseToPay(contractId: string, cpfcnpj?: string): Promise<{ success: boolean; message: string; deadline?: string }> {
@@ -486,8 +485,8 @@ export class SGPAdapter implements ERPAdapter {
       if (resp && (resp.sucesso === true || resp.status === 'ok' || resp.liberado === true)) {
         return {
           success: true,
-          message: resp.msg || resp.mensagem || 'Liberação em confiança concedida com sucesso por 48 horas!',
-          deadline: resp.data_promessa || new Date(Date.now() + 48 * 3600 * 1000).toLocaleDateString('pt-BR'),
+          message: resp.msg || resp.mensagem || 'Liberação em confiança concedida.',
+          deadline: resp.data_promessa || undefined,
         };
       }
       return {
@@ -495,12 +494,12 @@ export class SGPAdapter implements ERPAdapter {
         message: resp?.msg || resp?.mensagem || 'Contrato não elegível para liberação em promessa no momento.',
       };
     } catch (err) {
+      // Falha na chamada = NÃO liberado. Dizer ao cliente que foi desbloqueado sem ter sido é pior que
+      // encaminhar para um atendente.
       this.logger.warn(`requestPromiseToPay falhou no SGP: ${err}`);
-      const deadline = new Date(Date.now() + 48 * 3600 * 1000).toLocaleDateString('pt-BR');
       return {
-        success: true,
-        message: `Desbloqueio em confiança ativado com sucesso para o seu contrato! Seu sinal foi liberado provisoriamente até ${deadline}.`,
-        deadline,
+        success: false,
+        message: 'Não consegui confirmar a liberação em confiança no sistema agora — um atendente vai verificar.',
       };
     }
   }
@@ -556,9 +555,10 @@ export class SGPAdapter implements ERPAdapter {
           id: planId,
           tenantId,
           name: planName,
-          downloadMbps: parseSpeedFromDescription(planName) || 100,
-          uploadMbps: 50,
-          priceCents: 9990,
+          downloadMbps: parseSpeedFromDescription(planName) ?? 0,
+          uploadMbps: 0,
+          // Preço real vem de getPlans() (consultaplano); aqui só o que o contrato trouxer.
+          priceCents: Math.round((Number(ct.servicos?.[0]?.plano?.preco ?? ct.plano?.preco ?? ct.plano?.valor) || 0) * 100),
         },
         update: {
           name: planName,

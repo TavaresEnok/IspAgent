@@ -17,7 +17,7 @@ export class AuthController {
   @Post('login')
   @HttpCode(200)
   login(@Body() dto: LoginDto) {
-    return this.authService.login(dto.email, dto.password);
+    return this.authService.login(dto.email, dto.password, dto.tenantId);
   }
 
   @Get('me')
@@ -26,6 +26,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
   @HttpCode(200)
   refresh(@Body() dto: RefreshDto) {
@@ -33,6 +34,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('logout')
   @HttpCode(200)
   async logout(@Body() dto: RefreshDto) {

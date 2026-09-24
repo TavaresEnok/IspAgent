@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
+import { Roles } from '../common/decorators/roles.decorator';
 
 /**
  * Métricas reais (seção 10.2) — tudo aqui vem de agregação direta sobre AgentRun/Conversation/ToolCall/
@@ -55,10 +56,11 @@ export class DashboardController {
     ]);
 
     const csatTotal = surveys.length;
-    const csatAverage = csatTotal > 0 ? Number((surveys.reduce((acc, s) => acc + s.score, 0) / csatTotal).toFixed(1)) : 5.0;
+    // Sem avaliação não há nota: `null` (a tela mostra "sem dados"), nunca um 5,0 presumido.
+    const csatAverage = csatTotal > 0 ? Number((surveys.reduce((acc, s) => acc + s.score, 0) / csatTotal).toFixed(1)) : null;
     const deflectionRate = conversationsToday > 0
       ? Number((((conversationsToday - handoffToday) / conversationsToday) * 100).toFixed(1))
-      : 100;
+      : null;
 
     const intentCounts = agentRunsToday.reduce<Record<string, number>>((acc, run) => {
       acc[run.intent] = (acc[run.intent] ?? 0) + 1;
@@ -97,7 +99,9 @@ export class DashboardController {
     };
   }
 
+  // Leads e cancelamentos têm nome/telefone do cliente: mesmo nível de leitura das conversas.
   @Get('leads')
+  @Roles('ANALYST')
   async listLeads() {
     return this.db.client.commercialLead.findMany({
       orderBy: { createdAt: 'desc' },
@@ -106,6 +110,7 @@ export class DashboardController {
   }
 
   @Get('cancellations')
+  @Roles('ANALYST')
   async listCancellations() {
     return this.db.client.cancellationRequest.findMany({
       orderBy: { createdAt: 'desc' },

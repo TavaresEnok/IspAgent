@@ -5,10 +5,16 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { apiLogin, setSession, ApiError } from '@/lib/api';
 
+// Credenciais de demonstração só aparecem (e só pré-preenchem) num build marcado como DEMO.
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+const BRAND = process.env.NEXT_PUBLIC_WEBCHAT_BRAND || 'ISPAgent';
+
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@vibe.ispagent.local');
-  const [password, setPassword] = useState('Vibe!2026');
+  const [email, setEmail] = useState(DEMO_MODE ? 'admin@alpha.ispagent.local' : '');
+  const [password, setPassword] = useState(DEMO_MODE ? 'Demo!2026' : '');
+  const [tenantId, setTenantId] = useState('');
+  const [needsTenant, setNeedsTenant] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -17,11 +23,16 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const { accessToken, refreshToken } = await apiLogin(email, password);
+      const { accessToken, refreshToken } = await apiLogin(email, password, needsTenant ? tenantId.trim() : undefined);
       setSession(accessToken, refreshToken);
       router.push('/dashboard');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Falha ao autenticar no servidor');
+      if (err instanceof ApiError && err.code === 'TENANT_REQUIRED') {
+        setNeedsTenant(true);
+        setError(err.message);
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Falha ao conectar com a API');
+      }
     } finally {
       setLoading(false);
     }
@@ -39,11 +50,11 @@ export default function LoginPage() {
         {/* Brand Header */}
         <div className="mb-6 flex items-center gap-3.5">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 font-extrabold text-white shadow-lg shadow-cyan-500/25 text-2xl">
-            V
+            {BRAND.charAt(0).toUpperCase()}
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold tracking-tight text-white">Vibe Telecom</h1>
+              <h1 className="text-xl font-bold tracking-tight text-white">{BRAND}</h1>
               <span className="rounded-full bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 text-[10px] font-semibold text-cyan-400">
                 Staff NOC
               </span>
@@ -64,7 +75,8 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              placeholder="seu.email@vibetelecom.com.br"
+              placeholder="seu.email@provedor.com.br"
+              autoComplete="username"
               className="rounded-xl border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none transition"
             />
           </label>
@@ -77,9 +89,22 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               placeholder="••••••••"
+              autoComplete="current-password"
               className="rounded-xl border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none transition"
             />
           </label>
+          {needsTenant && (
+            <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-300">
+              <span>Provedor (tenant)</span>
+              <input
+                value={tenantId}
+                onChange={(e) => setTenantId(e.target.value)}
+                required
+                placeholder="identificador do provedor"
+                className="rounded-xl border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:border-cyan-500 focus:outline-none transition"
+              />
+            </label>
+          )}
 
           {error && (
             <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
@@ -103,16 +128,13 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Tenant Information Badge */}
-        <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 text-xs text-slate-400">
-          <div className="flex items-center justify-between font-medium text-slate-300 mb-1">
-            <span>Tenant Ativo</span>
-            <span className="font-mono text-cyan-400 text-[11px]">Vibe Telecom (tnt_vibe)</span>
+        {DEMO_MODE && (
+          <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 text-xs text-slate-400">
+            <p className="mb-1 font-medium text-slate-300">Credenciais DEMO</p>
+            <p>admin@alpha.ispagent.local / Demo!2026 (TENANT_ADMIN)</p>
+            <p>operador@alpha.ispagent.local / Demo!2026 (AGENT)</p>
           </div>
-          <p className="text-[11px] text-slate-400">
-            Ambiente conectado ao SGP oficial da Vibe Telecom (<code className="text-slate-300">vibetelecom.sgp.net.br</code>).
-          </p>
-        </div>
+        )}
 
         <div className="mt-6 flex items-center justify-between border-t border-slate-800/80 pt-4 text-xs">
           <Link href="/" className="text-slate-400 hover:text-slate-200 transition">

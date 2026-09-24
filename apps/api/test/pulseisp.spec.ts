@@ -162,10 +162,13 @@ describe('PulseISP', () => {
         return ask(conv.id, 'minha internet está caindo toda hora');
       });
 
-      const call = await runWithTenant('tnt_demo_alpha', () =>
-        db.client.toolCall.findUnique({ where: { id: decision.toolCalls[0] } }),
+      const calls = await runWithTenant('tnt_demo_alpha', () =>
+        db.client.toolCall.findMany({ where: { id: { in: decision.toolCalls } } }),
       );
-      expect(call?.tool).toBe('KnowledgeTool');
+      const tools = calls.map((c) => c.tool);
+      // Sem PulseISP: nunca chama o PulseISP; usa a leitura óptica do ERP (quando há) e a base de conhecimento.
+      expect(tools).not.toContain('PulseISPTool');
+      expect(tools).toContain('KnowledgeTool');
     });
 
     it('flag LIGADA: mesma intenção de rede para cus_demo_c chama PulseISPTool e reflete degradação individual', async () => {

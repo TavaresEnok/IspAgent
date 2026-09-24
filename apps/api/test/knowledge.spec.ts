@@ -43,8 +43,12 @@ describe('Knowledge Base', () => {
   });
 
   it('busca é isolada por tenant: Beta não encontra documentos do Alpha', async () => {
+    const alphaDocs = await runWithTenant('tnt_demo_alpha', () => db.client.knowledgeDocument.findMany({ select: { id: true } }));
     const results = await runWithTenant('tnt_demo_beta', () => knowledge.search('internet lenta'));
-    expect(results).toHaveLength(0);
+    // Beta pode ter os próprios artigos (ex.: os padrão); nunca um documento do Alpha.
+    const alphaIds = new Set(alphaDocs.map((d) => d.id));
+    expect(alphaDocs.length).toBeGreaterThan(0);
+    expect(results.filter((r) => alphaIds.has(r.id))).toHaveLength(0);
   });
 
   it('KnowledgeTool executa pelo pipeline padrão e devolve facts citáveis', async () => {

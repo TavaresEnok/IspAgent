@@ -13,27 +13,14 @@
     return scripts[scripts.length - 1];
   })();
 
-  var tenantId = currentScript ? (currentScript.getAttribute('data-tenant') || 'tnt_vibe') : 'tnt_vibe';
-  var botTitle = currentScript ? (currentScript.getAttribute('data-title') || 'Vibe Telecom') : 'Vibe Telecom';
+  var tenantId = currentScript ? currentScript.getAttribute('data-tenant') || '' : '';
+  var botTitle = currentScript ? currentScript.getAttribute('data-title') || 'Atendimento' : 'Atendimento';
   var primaryColor = currentScript ? (currentScript.getAttribute('data-color') || '#0891b2') : '#0891b2';
   var position = currentScript ? (currentScript.getAttribute('data-position') || 'right') : 'right';
 
   // Base URL do serviço (usa a mesma origem do script ou localhost em dev)
   var scriptUrl = currentScript && currentScript.src ? new URL(currentScript.src) : window.location;
   var baseUrl = scriptUrl.origin;
-
-  // Cria ID único da sessão do visitante no localStorage para manter a conversa ativa ao navegar pelas páginas
-  var storageKey = 'ispagent_session_' + tenantId;
-  var visitorSessionId = '';
-  try {
-    visitorSessionId = localStorage.getItem(storageKey);
-    if (!visitorSessionId) {
-      visitorSessionId = 'widget_' + Math.random().toString(36).substring(2, 10);
-      localStorage.setItem(storageKey, visitorSessionId);
-    }
-  } catch (e) {
-    visitorSessionId = 'widget_' + Math.random().toString(36).substring(2, 10);
-  }
 
   // Estilos CSS do Widget
   var styles = document.createElement('style');
@@ -123,7 +110,9 @@
   var iframe = document.createElement('iframe');
   iframe.className = 'ispagent-iframe';
   iframe.title = botTitle + ' - Atendimento Inteligente';
-  iframe.src = baseUrl + '/webchat?as=' + encodeURIComponent(visitorSessionId);
+  // A sessão (id aleatório + token) é criada e guardada pela própria página do chat.
+  iframe.src = baseUrl + '/webchat?tenant=' + encodeURIComponent(tenantId);
+  iframe.allow = 'microphone; clipboard-write';
   container.appendChild(iframe);
   document.body.appendChild(container);
 

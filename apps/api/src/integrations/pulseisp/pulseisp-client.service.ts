@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PulseAnomalyDetail, PulseCustomer360 } from './pulseisp-mapper';
 import { PulseIspConnectionService } from './pulseisp-connection.service';
+import { UnsafeOutboundUrlError, assertSafeOutboundUrl } from '../../common/outbound-url';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 // O JWT de acesso do PulseISP dura 15 min por padrão (PULSEISP_JWT_ACCESS_TTL_SECONDS=900) — renova antes.
@@ -15,7 +16,7 @@ export interface PulseCustomerSummary {
   status: string;
   healthScore: number | null;
   healthBand: string | null;
-  contract: { plan: { name: string; downloadMbps: number } | null } | null;
+  contract: { externalId?: string; pppoeLogin?: string; plan: { name: string; downloadMbps: number } | null } | null;
 }
 
 export class PulseIspError extends Error {
@@ -51,7 +52,18 @@ export class PulseIspClient {
     return c;
   }
 
+  /** A URL é configurada pelo admin do tenant: nunca chamar endereço de metadata/rede interna (SSRF). */
+  private async assertSafe(baseUrl: string) {
+    try {
+      await assertSafeOutboundUrl(baseUrl);
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) throw new PulseIspError(`URL do PulseISP não permitida: ${err.message}`);
+      throw err;
+    }
+  }
+
   private async login(c: { baseUrl: string; email: string; password: string }, key: string): Promise<string> {
+    await this.assertSafe(c.baseUrl);
     let res: Response;
     try {
       res = await fetch(`${c.baseUrl}/auth/login`, {
@@ -79,6 +91,7 @@ export class PulseIspClient {
 
   private async get<T>(tenantId: string, path: string, allowRetry = true): Promise<T> {
     const c = await this.conn(tenantId);
+    await this.assertSafe(c.baseUrl);
     const key = `${tenantId}|${c.baseUrl}|${c.email}`;
     const cached = this.tokens.get(key);
     const token = cached && cached.expiresAt > Date.now() ? cached.token : await this.login(c, key);
@@ -105,6 +118,21 @@ export class PulseIspClient {
   async searchCustomers(tenantId: string, search: string) {
     const q = encodeURIComponent(search.trim().slice(0, 80));
     return this.get<{ items: PulseCustomerSummary[]; total: number }>(tenantId, `/customers?search=${q}&pageSize=15`);
+  }
+
+  /**
+   * Busca cliente pelo login PPPoE, que nas operadoras brasileiras costuma ser o CPF sem formatação.
+   * Retorna o único cliente cujo contrato ativo tem `pppoeLogin === digits`, ou `null` se não encontrar
+   * exatamente um (zero ou ambiguidade — não identifica).
+   */
+  async findByPppoeLogin(tenantId: string, digits: string): Promise<PulseCustomerSummary | null> {
+    try {
+      const result = await this.searchCustomers(tenantId, digits);
+      const exact = result.items.filter((c) => c.contract?.pppoeLogin === digits);
+      return exact.length === 1 ? exact[0] : null;
+    } catch {
+      return null;
+    }
   }
 
   async customer360(tenantId: string, customerId: string) {

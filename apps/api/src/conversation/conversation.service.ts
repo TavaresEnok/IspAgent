@@ -3,6 +3,7 @@ import { Conversation, ConversationChannel, MessageRole } from '@prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { IdentityResolutionService, IdentityResolution } from '../identity/identity-resolution.service';
 import { currentTenantId } from '../common/tenant-context';
+import { trustWebchatPhone } from '../common/security-config';
 
 /**
  * `tenantId` é passado explicitamente aqui (via `currentTenantId()`) para satisfazer o tipo gerado
@@ -31,15 +32,24 @@ export class ConversationService {
     private readonly identity: IdentityResolutionService,
   ) {}
 
+  /**
+   * Serializa "buscar ou criar" por (tenant, canal, usuário) com um advisory lock de transação: duas
+   * mensagens simultâneas do mesmo cliente não criam duas conversas abertas.
+   */
   async findOrCreateConversation(channel: ConversationChannel, channelUserId: string): Promise<Conversation> {
-    const existing = await this.db.client.conversation.findFirst({
-      where: { channel, channelUserId, status: { not: 'CLOSED' } },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (existing) return existing;
+    const tenantId = requireTenantId();
+    return this.db.client.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}|${channel}|${channelUserId}`}))`;
 
-    return this.db.client.conversation.create({
-      data: { tenantId: requireTenantId(), channel, channelUserId, status: 'AI_ACTIVE' },
+      const existing = await tx.conversation.findFirst({
+        where: { channel, channelUserId, status: { not: 'CLOSED' } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) return existing;
+
+      return tx.conversation.create({
+        data: { tenantId, channel, channelUserId, status: 'AI_ACTIVE' },
+      });
     });
   }
 
@@ -56,7 +66,16 @@ export class ConversationService {
       return this.toIdentityResolution(conversation);
     }
 
-    const result = await this.identity.resolveByPhone(conversation.channelUserId);
+    // `sgp:<id>` só chega aqui vindo do simulador (o Web Chat exige login de admin para esse prefixo).
+    const simulatedCustomerId =
+      conversation.channel === 'WEBCHAT' && conversation.channelUserId.startsWith('sgp:')
+        ? conversation.channelUserId.slice('sgp:'.length)
+        : null;
+    const result = simulatedCustomerId
+      ? await this.identity.resolveByCustomerId(simulatedCustomerId)
+      : this.canTrustChannelPhone(conversation)
+        ? await this.identity.resolveByPhone(conversation.channelUserId)
+        : ({ method: 'NOT_FOUND', confidence: 'LOW' } as const);
 
     await this.db.client.conversation.update({
       where: { id: conversationId },
@@ -75,6 +94,16 @@ export class ConversationService {
     return this.db.client.message.create({
       data: { tenantId: requireTenantId(), conversationId, role, content },
     });
+  }
+
+  /**
+   * No Web Chat o "telefone" é só texto digitado — não prova quem é. Fora do modo DEMO ele não identifica
+   * ninguém (só o documento informado no chat, ou o simulador de staff `pulse:*`). Canais verificados
+   * (WhatsApp) provam o número.
+   */
+  private canTrustChannelPhone(conversation: Conversation): boolean {
+    if (conversation.channel !== 'WEBCHAT') return true;
+    return trustWebchatPhone() || conversation.channelUserId.startsWith('pulse:');
   }
 
   private toIdentityResolution(conversation: Conversation): IdentityResolution {

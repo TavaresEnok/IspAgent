@@ -51,7 +51,7 @@ export default function PoliciesPage() {
       if (c) {
         setConfig(c);
         setPersonaForm({
-          companyName: c.companyName || 'Vibe Telecom',
+          companyName: c.companyName || '',
           assistantName: c.assistantName || 'Assistente Virtual',
           tone: c.tone || 'caloroso, educado, empático e resolutivo (2 a 4 frases)',
           customRules: c.customRules || '',

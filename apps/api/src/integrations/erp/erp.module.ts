@@ -4,6 +4,7 @@ import { MockERPAdapter } from './mock-erp.adapter';
 import { IXCAdapter } from './ixc.adapter';
 import { SGPAdapter } from './sgp.adapter';
 import { SgpClientService } from './sgp-client.service';
+import { SgpController } from './sgp.controller';
 
 /**
  * Seleciona o ERPAdapter concreto por `ISPAGENT_ERP_PROVIDER` (demo|ixc|sgp — default demo). Nenhum
@@ -11,6 +12,7 @@ import { SgpClientService } from './sgp-client.service';
  * `ERP_ADAPTER`, para trocar de provider sem tocar em regra de negócio.
  */
 @Module({
+  controllers: [SgpController],
   providers: [
     SgpClientService,
     MockERPAdapter,

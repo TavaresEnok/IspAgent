@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ispagent
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: ispagent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ispagent -d ispagent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Os testes derivam o banco `ispagent_test` deste (apps/api/test/test-db.js) e o criam sozinhos.
+      ISPAGENT_DATABASE_URL: postgresql://ispagent:ci_password@localhost:5432/ispagent?schema=public
+      ISPAGENT_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.5.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # `prisma:generate` lê ../../.env; o exemplo basta (as variáveis do job têm precedência).
+      - run: cp .env.example .env
+      - run: pnpm --filter @ispagent/shared build
+      - run: pnpm --filter @ispagent/api prisma:generate
+
+      - name: Typecheck (api + web)
+        run: pnpm lint
+      - name: Tipos dos testes e scripts do Prisma
+        run: pnpm --filter @ispagent/api typecheck
+
+      - name: Testes da API (banco de teste isolado)
+        run: pnpm test
+
+      - name: Build (shared + api + web)
+        run: pnpm build
+
+      - name: Auditoria de dependências
+        run: pnpm audit --audit-level high

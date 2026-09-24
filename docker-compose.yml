@@ -1,14 +1,17 @@
 name: ispagent
 
+# Portas: banco e Redis só respondem em 127.0.0.1 (nunca na rede). API e web também, por padrão —
+# em servidor, coloque um proxy reverso com TLS na frente ou defina ISPAGENT_BIND_ADDR=0.0.0.0.
 services:
   ispagent-db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${ISPAGENT_DB_USER:-ispagent}
       POSTGRES_PASSWORD: ${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}
       POSTGRES_DB: ${ISPAGENT_DB_NAME:-ispagent}
     ports:
-      - '${ISPAGENT_DB_PORT:-5433}:5432'
+      - '127.0.0.1:${ISPAGENT_DB_PORT:-5433}:5432'
     volumes:
       - ispagent-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -19,35 +22,61 @@ services:
 
   ispagent-redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${ISPAGENT_REDIS_PASSWORD:-ispagent_dev_redis}
+    command: ['sh', '-c', 'exec redis-server --requirepass "$$REDIS_PASSWORD"']
     ports:
-      - '${ISPAGENT_REDIS_PORT:-6380}:6379'
+      - '127.0.0.1:${ISPAGENT_REDIS_PORT:-6380}:6379'
     volumes:
       - ispagent-redis-data:/data
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ['CMD-SHELL', 'redis-cli --no-auth-warning -a "$$REDIS_PASSWORD" ping | grep -q PONG']
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Aplica as migrations pendentes (prisma migrate deploy) antes de a API e o worker subirem. É um job
+  # de uma execução só: termina com sucesso e não fica rodando.
+  ispagent-migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ['./node_modules/.bin/prisma', 'migrate', 'deploy']
+    restart: 'no'
+    env_file:
+      - .env
+    environment:
+      ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
+    depends_on:
+      ispagent-db:
+        condition: service_healthy
 
   ispagent-api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     environment:
       ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
-      ISPAGENT_REDIS_URL: redis://ispagent-redis:6379
+      ISPAGENT_REDIS_URL: redis://:${ISPAGENT_REDIS_PASSWORD:-ispagent_dev_redis}@ispagent-redis:6379
       ISPAGENT_API_PORT_INTERNAL: '3001'
     ports:
-      - '${ISPAGENT_API_PORT:-3001}:3001'
+      - '${ISPAGENT_BIND_ADDR:-127.0.0.1}:${ISPAGENT_API_PORT:-3001}:3001'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    networks:
+      - default
+      - pulseisp
     depends_on:
       ispagent-db:
         condition: service_healthy
       ispagent-redis:
         condition: service_healthy
+      ispagent-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ['CMD', 'node', '-e', "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
       interval: 5s
@@ -59,6 +88,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
     command: ['node', 'dist/worker.main.js']
     extra_hosts:
       - 'host.docker.internal:host-gateway'
@@ -66,13 +96,18 @@ services:
       - .env
     environment:
       ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
-      ISPAGENT_REDIS_URL: redis://ispagent-redis:6379
+      ISPAGENT_REDIS_URL: redis://:${ISPAGENT_REDIS_PASSWORD:-ispagent_dev_redis}@ispagent-redis:6379
       ISPAGENT_WORKER_HEALTH_PORT: '3002'
+    networks:
+      - default
+      - pulseisp
     depends_on:
       ispagent-db:
         condition: service_healthy
       ispagent-redis:
         condition: service_healthy
+      ispagent-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ['CMD', 'node', '-e', "require('http').get('http://localhost:3002/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
       interval: 5s
@@ -84,15 +119,22 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* são gravadas no bundle do navegador no BUILD (ver apps/web/Dockerfile).
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_WEBCHAT_TENANT_ID: ${NEXT_PUBLIC_WEBCHAT_TENANT_ID:-}
+        NEXT_PUBLIC_WEBCHAT_BRAND: ${NEXT_PUBLIC_WEBCHAT_BRAND:-}
+        NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-}
+        ISPAGENT_WEBCHAT_FRAME_ANCESTORS: ${ISPAGENT_WEBCHAT_FRAME_ANCESTORS:-}
+    restart: unless-stopped
     environment:
-      ISPAGENT_WEB_API_URL: http://localhost:${ISPAGENT_API_PORT:-3001}
       PORT: '3000'
       # O server.js gerado pelo "standalone" do Next usa HOSTNAME para bind; sem isso, herda o HOSTNAME
       # que o Docker seta automaticamente (o ID do container) e escuta só nesse endereço, não em
       # 0.0.0.0 — o healthcheck (e qualquer acesso externo) falha com ECONNREFUSED.
       HOSTNAME: '0.0.0.0'
     ports:
-      - '${ISPAGENT_WEB_PORT:-3000}:3000'
+      - '${ISPAGENT_BIND_ADDR:-127.0.0.1}:${ISPAGENT_WEB_PORT:-3000}:3000'
     depends_on:
       ispagent-api:
         condition: service_healthy
@@ -106,3 +148,11 @@ services:
 volumes:
   ispagent-db-data:
   ispagent-redis-data:
+
+networks:
+  default: {}
+  # Rede interna do PulseISP: permite que ispagent-api e ispagent-worker alcancem
+  # pulseisp-api:4000 diretamente por nome, sem expor nenhuma porta adicional.
+  pulseisp:
+    external: true
+    name: pulseisp_default

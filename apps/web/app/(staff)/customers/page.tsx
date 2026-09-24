@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { apiFetch, API_URL } from '@/lib/api';
+import { apiFetch, ApiError } from '@/lib/api';
 
 interface CustomerRow {
   id: string;
@@ -32,19 +32,16 @@ export default function CustomersPage() {
     setSearchResult(null);
 
     try {
-      const res = await fetch(`${API_URL}/public/webchat/tnt_vibe/sgp-customer?query=${encodeURIComponent(q)}`);
-      if (!res.ok) {
-        setSearchMsg('Erro na consulta ao SGP.');
-        return;
-      }
-      const data = await res.json();
+      const data = await apiFetch<{ found: boolean; customer?: typeof searchResult }>(
+        `/sgp/customer?query=${encodeURIComponent(q)}`,
+      );
       if (!data.found || !data.customer) {
-        setSearchMsg('Nenhum cliente localizado no SGP da Vibe Telecom com estes dados.');
+        setSearchMsg('Nenhum cliente localizado no SGP com estes dados.');
       } else {
         setSearchResult(data.customer);
       }
-    } catch {
-      setSearchMsg('Não foi possível conectar à API do SGP.');
+    } catch (err) {
+      setSearchMsg(err instanceof ApiError ? err.message : 'Não foi possível conectar à API do SGP.');
     } finally {
       setSearching(false);
     }
@@ -108,7 +105,7 @@ export default function CustomersPage() {
                 <span className="ml-3 text-xs text-slate-400 font-mono">CPF: {searchResult.document}</span>
               </div>
               <a
-                href={`/webchat?as=${encodeURIComponent(searchResult.phones[0] || `sgp:${searchResult.id}`)}`}
+                href={`/webchat?as=${encodeURIComponent(`sgp:${searchResult.id}`)}`}
                 className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 transition"
               >
                 Abrir Chat deste Cliente →

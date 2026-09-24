@@ -107,7 +107,7 @@ model TenantPolicyConfig {
   maxToolCallsPerTurn           Int     @default(8)
   maxTokensPerTurn              Int     @default(6000)
   handoffAfterFailures          Int     @default(3)
-  companyName                  String  @default("Vibe Telecom")
+  companyName                  String? // vazio = nome do tenant
   assistantName                String  @default("Assistente Virtual")
   tone                         String  @default("caloroso, educado, empático e resolutivo (2 a 4 frases)")
   customRules                  String?
@@ -128,9 +128,9 @@ model AiProviderConfig {
   @@map("ai_provider_configs")
 }
 
-// Uma linha por (tenant, provider): chave e modelo de cada API configurada. `apiKey` fica em texto
-// puro — aceitável para o ambiente local/DEMO desta sessão (docs/security.md), não é a postura
-// recomendada pra produção (precisaria de um secret manager).
+// Uma linha por (tenant, provider): chave e modelo de cada API configurada. `apiKey` é gravada CIFRADA
+// (AES-256-GCM, prefixo `enc:v1:`, ver src/common/secret-cipher.ts); valor sem prefixo é legado em
+// texto puro e é regravado cifrado no primeiro acesso.
 model AiProviderCredential {
   tenantId  String
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
@@ -144,8 +144,7 @@ model AiProviderCredential {
 }
 
 // Como o ISPAgent se conecta ao PulseISP deste tenant (login de leitura no PulseISP, configurado pela
-// tela "PulseISP" do painel). `password` fica em texto puro — aceitável só no ambiente local/DEMO
-// (docs/security.md); em produção precisaria de um secret manager.
+// tela "PulseISP" do painel). `password` é gravada CIFRADA (mesmo esquema de `apiKey` acima).
 model PulseIspConnection {
   tenantId  String   @id
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
@@ -173,6 +172,8 @@ model Customer {
 
   @@index([tenantId])
   @@index([tenantId, externalId])
+  @@index([tenantId, document])
+  @@index([phones], type: Gin)
   @@map("customers")
 }
 
@@ -328,6 +329,7 @@ model Message {
 
   @@index([tenantId])
   @@index([conversationId])
+  @@index([conversationId, createdAt])
   @@map("messages")
 }
 
@@ -416,6 +418,7 @@ model AuditLog {
 
   @@index([tenantId])
   @@index([tenantId, action])
+  @@index([tenantId, action, entityId])
   @@map("audit_logs")
 }
 

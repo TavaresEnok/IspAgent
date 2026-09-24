@@ -7,8 +7,8 @@ interface Metrics {
   conversationsToday: number;
   answeredByAiToday: number;
   handedOffToday: number;
-  deflectionRate: number;
-  csat: { average: number; totalSurveys: number };
+  deflectionRate: number | null;
+  csat: { average: number | null; totalSurveys: number };
   commercialLeads: number;
   retention: { total: number; retained: number };
   topIntents: Array<{ intent: string; count: number }>;
@@ -78,13 +78,13 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Taxa de Deflexão da IA"
-          value={`${metrics.deflectionRate ?? 100}%`}
+          value={metrics.deflectionRate != null ? `${metrics.deflectionRate}%` : 'Sem dados'}
           sub="Atendimentos resolvidos sem transbordo humano"
           icon="🎯"
         />
         <StatCard
           label="Satisfação do Cliente (CSAT)"
-          value={`${metrics.csat?.average ?? '5.0'} ★`}
+          value={metrics.csat?.average != null ? `${metrics.csat.average} ★` : 'Sem dados'}
           sub={`${metrics.csat?.totalSurveys ?? 0} avaliações recebidas`}
           icon="⭐"
         />

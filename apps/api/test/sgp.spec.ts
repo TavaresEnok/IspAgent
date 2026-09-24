@@ -1,13 +1,46 @@
 import { SGPAdapter } from '../src/integrations/erp/sgp.adapter';
 import { SgpClientService, SgpError } from '../src/integrations/erp/sgp-client.service';
+import { EventEmitter } from 'node:events';
 import { runWithTenant } from '../src/common/tenant-context';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const httpsModule = require('https');
+
+/** Resposta HTTP falsa na camada `https` (o cliente SGP não usa fetch): nenhum teste toca o SGP real. */
+function fakeHttps(statusCode: number, body: unknown) {
+  return jest.spyOn(httpsModule, 'request').mockImplementation(((_opts: unknown, cb: (res: EventEmitter) => void) => {
+    const res = Object.assign(new EventEmitter(), { statusCode });
+    const req = Object.assign(new EventEmitter(), {
+      write: () => true,
+      destroy: () => undefined,
+      end: () => {
+        cb(res);
+        res.emit('data', JSON.stringify(body));
+        res.emit('end');
+      },
+    });
+    return req;
+  }) as never);
+}
 
 describe('SGPAdapter & SgpClientService', () => {
   let mockDb: any;
   let sgpClient: SgpClientService;
   let adapter: SGPAdapter;
 
+  const originalEnv = { ...process.env };
+  afterEach(() => {
+    for (const key of ['ISPAGENT_SGP_BASE_URL', 'ISPAGENT_SGP_TOKEN', 'ISPAGENT_SGP_APP']) {
+      if (originalEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = originalEnv[key];
+    }
+  });
+
   beforeEach(() => {
+    // Valores fictícios: credencial real do SGP só existe no .env do servidor, nunca no código/testes.
+    process.env.ISPAGENT_SGP_BASE_URL = 'https://sgp.teste.invalid';
+    process.env.ISPAGENT_SGP_TOKEN = 'token-de-teste';
+    process.env.ISPAGENT_SGP_APP = 'app-de-teste';
     mockDb = {
       client: {
         customer: {
@@ -47,13 +80,14 @@ describe('SGPAdapter & SgpClientService', () => {
       expect(cfg.app).toBeDefined();
     });
 
+    it('sem variáveis de ambiente não há SGP configurado (nenhuma credencial embutida no código)', async () => {
+      delete process.env.ISPAGENT_SGP_TOKEN;
+      expect(sgpClient.isConfigured()).toBe(false);
+      await expect(sgpClient.consultarPlanos()).rejects.toThrow(/não configurado/);
+    });
+
     it('request lança SgpError com instrução clara de IP em caso de 403', async () => {
-      jest.spyOn(global, 'fetch').mockImplementationOnce(async () => {
-        return new Response(JSON.stringify({ detail: 'Credenciais de autenticação incorretas.' }), {
-          status: 403,
-          statusText: 'Forbidden',
-        });
-      });
+      fakeHttps(403, { detail: 'Credenciais de autenticação incorretas.' });
 
       await expect(sgpClient.consultarPlanos()).rejects.toThrow(/Hosts Permitidos/);
       jest.restoreAllMocks();
@@ -149,8 +183,9 @@ describe('SGPAdapter & SgpClientService', () => {
         ],
       });
 
-      jest.spyOn(sgpClient, 'gerarPix').mockResolvedValueOnce({
-        qrcode_string: '00020126580014br.gov.bcb.pix...',
+      // O adapter completa PIX/PDF das faturas em aberto pela 2ª via do SGP.
+      jest.spyOn(sgpClient, 'segundaViaFatura').mockResolvedValue({
+        links: [{ codigopix: '00020126580014br.gov.bcb.pix...' }],
       });
 
       const invoices = await runWithTenant('tnt_vibe', () => adapter.getInvoices('sgp_5678'));
@@ -205,6 +240,36 @@ describe('SGPAdapter & SgpClientService', () => {
 
       expect(created.id).toBe('999');
       expect(created.status).toBe('OPEN');
+      jest.restoreAllMocks();
+    });
+
+    it('falha do SGP nunca vira dado inventado: sem sinal fictício, sem "online", sem desbloqueio falso', async () => {
+      jest.spyOn(sgpClient, 'consultarSinalOnu').mockRejectedValueOnce(new SgpError('timeout'));
+      jest.spyOn(sgpClient, 'consultarCliente').mockRejectedValueOnce(new SgpError('timeout'));
+      jest.spyOn(sgpClient, 'liberarPromessa').mockRejectedValueOnce(new SgpError('timeout'));
+
+      await runWithTenant('tnt_vibe', async () => {
+        expect(await adapter.getOpticalPower('sgp_5678')).toBeNull();
+        expect(await adapter.getServiceStatus('sgp_5678')).toBeNull();
+        const promise = await adapter.requestPromiseToPay('sgp_5678');
+        expect(promise.success).toBe(false);
+        expect(promise.deadline).toBeUndefined();
+      });
+      jest.restoreAllMocks();
+    });
+
+    it('plano sem preço/velocidade conhecidos fica 0 (a PlanTool não afirma), nunca R$ 99,90/100 Mbps', async () => {
+      jest.spyOn(sgpClient, 'consultarPlanos').mockResolvedValueOnce({ planos: [{ id: 9, descricao: 'PLANO ESPECIAL' }] });
+      const plans = await runWithTenant('tnt_vibe', () => adapter.getPlans());
+      expect(plans[0]).toMatchObject({ downloadMbps: 0, uploadMbps: 0, priceCents: 0 });
+      jest.restoreAllMocks();
+    });
+
+    it('sem contexto de tenant o adapter não grava em tenant nenhum (nada de tenant fixo)', async () => {
+      jest.spyOn(sgpClient, 'consultarPlanos').mockResolvedValueOnce({ planos: [{ id: 1, descricao: 'VIBE 300 MEGA', preco: 79.9 }] });
+      const plans = await adapter.getPlans();
+      expect(mockDb.client.plan.upsert).not.toHaveBeenCalled();
+      expect(Array.isArray(plans)).toBe(true);
       jest.restoreAllMocks();
     });
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { API_URL } from '@/lib/api';
+import { apiFetch, ApiError } from '@/lib/api';
 
 interface SgpContract {
   id: string;
@@ -34,23 +34,16 @@ export default function SgpConsolePage() {
     setFoundCustomer(null);
 
     try {
-      const res = await fetch(`${API_URL}/public/webchat/tnt_vibe/sgp-customer?query=${encodeURIComponent(q)}`);
-      if (!res.ok) {
-        if (res.status === 403) {
-          setError('SGP retornou HTTP 403: Verifique se o IP 168.194.15.42 está autorizado na lista de Hosts Permitidos do token "webchatnoc" no SGP.');
-        } else {
-          setError(`Erro na consulta ao SGP (HTTP ${res.status})`);
-        }
-        return;
-      }
-      const data = await res.json();
+      const data = await apiFetch<{ found: boolean; customer?: SgpCustomerInfo }>(
+        `/sgp/customer?query=${encodeURIComponent(q)}`,
+      );
       if (!data.found || !data.customer) {
         setNotice('Nenhum cliente encontrado no SGP com o termo informado.');
       } else {
         setFoundCustomer(data.customer);
       }
-    } catch (err: any) {
-      setError(err?.message || 'Falha na conexão com a API do SGP.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Falha na conexão com a API do SGP.');
     } finally {
       setSearching(false);
     }
@@ -160,7 +153,7 @@ export default function SgpConsolePage() {
               </div>
 
               <a
-                href={`/webchat?as=${encodeURIComponent(foundCustomer.phones[0] || `sgp:${foundCustomer.id}`)}`}
+                href={`/webchat?as=${encodeURIComponent(`sgp:${foundCustomer.id}`)}`}
                 className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-500 shadow-md transition"
               >
                 <span>💬 Iniciar Web Chat como este Cliente</span>

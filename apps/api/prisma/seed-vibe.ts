@@ -4,6 +4,7 @@
  * propósito: não é dado DEMO, não entra no `verify.ps1`, e a senha do admin NÃO é fixa/conhecida — é
  * gerada uma vez e impressa (ou vem de ISPAGENT_VIBE_ADMIN_PASSWORD). Reexecutar não troca a senha.
  */
+import { DEFAULT_KB_ARTICLES, defaultKbArticleId } from '../src/knowledge/default-articles';
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'node:crypto';
@@ -25,6 +26,16 @@ async function main() {
     update: {},
     create: { tenantId: TENANT_ID },
   });
+
+  // Artigos técnicos padrão da Base de Conhecimento (documentos normais do tenant, editáveis no painel).
+  for (const article of DEFAULT_KB_ARTICLES) {
+    const id = defaultKbArticleId(TENANT_ID, article.slug);
+    await prisma.knowledgeDocument.upsert({
+      where: { id },
+      update: {},
+      create: { id, tenantId: TENANT_ID, title: article.title, content: article.content, source: article.source },
+    });
+  }
 
   const existing = await prisma.user.findUnique({ where: { tenantId_email: { tenantId: TENANT_ID, email: ADMIN_EMAIL } } });
   const fromEnv = process.env.ISPAGENT_VIBE_ADMIN_PASSWORD;

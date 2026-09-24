@@ -1,32 +1,114 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Query } from '@nestjs/common';
-import { PulseIspClient, PulseIspError } from '../integrations/pulseisp/pulseisp-client.service';
-import { PulseIspMirrorService } from '../integrations/pulseisp/pulseisp-mirror.service';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Headers,
+  Inject,
+  NotFoundException,
+  Param,
+  Post,
+  Req,
+} from '@nestjs/common';
+import { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
-import { IsString, MinLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { ROLE_HIERARCHY, Role } from '@ispagent/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { ConversationService } from '../conversation/conversation.service';
 import { AgentOrchestratorService } from '../agent/agent-orchestrator.service';
 import { runWithTenant } from '../common/tenant-context';
 import { Public } from '../common/decorators/public.decorator';
-
+import {
+  demoEndpointsEnabled,
+  isProduction,
+  trustWebchatPhone,
+  webchatPublicEnabled,
+} from '../common/security-config';
 import { ERP_ADAPTER, ERPAdapter } from '../integrations/erp/erp-adapter.interface';
-import { Inject } from '@nestjs/common';
 import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
+import { ReceiptAnalysisResult } from '../integrations/ai/ai-provider.interface';
+import { isValidWebchatToken, issueWebchatToken } from './webchat-session';
 
-class WebchatMessageDto {
+/** Identificador do "usuário" do canal: telefone digitado (DEMO) ou id de sessão aleatório. */
+const CHANNEL_USER_ID = /^[\w+:.@-]{1,64}$/;
+/**
+ * Prefixos reservados aos simuladores do painel (um admin escolheu um cliente real): `pulse:` (PulseISP)
+ * e `sgp:` (ERP). Só aceitos com login de administrador do mesmo tenant.
+ */
+const RESERVED_PREFIXES = ['pulse:', 'sgp:'];
+/** ~6 MB de arquivo (base64 cresce ~4/3). O limite de corpo dessas rotas é configurado em app.setup.ts. */
+const MAX_MEDIA_BASE64 = 8_000_000;
+const RECEIPT_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'];
+const AUDIO_MIME = ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/x-m4a', 'audio/aac'];
+
+const AUDIO_NOT_UNDERSTOOD =
+  'Não consegui ouvir o seu áudio por aqui. Pode me escrever em poucas palavras o que você precisa?';
+
+class ChannelUserDto {
   @IsString()
   @MinLength(1)
+  @MaxLength(64)
+  @Matches(CHANNEL_USER_ID, { message: 'channelUserId inválido' })
   channelUserId!: string;
+}
 
+class WebchatMessageDto extends ChannelUserDto {
+  // Cada mensagem aciona classificação + (possivelmente) LLM: sem teto, é custo e superfície de abuso.
   @IsString()
   @MinLength(1)
+  @MaxLength(2000)
   message!: string;
 }
 
+class SurveyDto extends ChannelUserDto {
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rating!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  comment?: string;
+}
+
+class ReceiptDto extends ChannelUserDto {
+  @IsString()
+  @MinLength(16)
+  @MaxLength(MAX_MEDIA_BASE64)
+  fileBase64!: string;
+
+  @IsOptional()
+  @IsIn(RECEIPT_MIME)
+  mimeType?: string;
+}
+
+class VoiceDto extends ChannelUserDto {
+  @IsString()
+  @MinLength(16)
+  @MaxLength(MAX_MEDIA_BASE64)
+  audioBase64!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  mimeType?: string;
+}
+
 /**
- * Web Chat oficial para o cliente final. Público (sem JWT).
- * Conecta-se diretamente ao SGP da Vibe Telecom para identificação real.
+ * Web Chat (seção 6.3): canal para o cliente final. Público (sem JWT) — quem identifica o tenant é o
+ * segmento `:tenantId` da URL, não um token de staff. O "telefone" digitado NÃO prova identidade (só um
+ * canal verificado, como o WhatsApp, provaria), por isso:
+ *   - fora do modo DEMO (`ISPAGENT_ENV=production`) o canal fica desligado, a menos que
+ *     `ISPAGENT_WEBCHAT_PUBLIC_ENABLED=true`; quando ligado em produção o telefone não identifica ninguém
+ *     (só o documento informado no chat) e cada conversa exige um token de sessão emitido pelo servidor;
+ *   - os prefixos `pulse:`/`sgp:` (cliente real escolhido no simulador) só aceitam login de admin do tenant;
+ *   - buscar clientes do ERP/PulseISP e simular cliente são rotas de STAFF (`/sgp/*`, `/pulseisp/*`).
+ * Toda rota que toca uma conversa (mensagem, comprovante, áudio, pesquisa, aviso) passa pelas mesmas
+ * checagens de canal e de sessão.
  */
 @Controller('public/webchat')
 export class WebchatController {
@@ -36,151 +118,53 @@ export class WebchatController {
     private readonly conversation: ConversationService,
     private readonly orchestrator: AgentOrchestratorService,
     @Inject(ERP_ADAPTER) private readonly erp: ERPAdapter,
-    private readonly pulse: PulseIspClient,
-    private readonly mirror: PulseIspMirrorService,
     private readonly aiResolver: AiProviderResolverService,
   ) {}
 
-  /**
-   * Busca cliente real no SGP por CPF/CNPJ, telefone ou contrato.
-   */
   @Public()
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @Get(':tenantId/sgp-customer')
-  async sgpCustomer(@Param('tenantId') tenantId: string, @Query('query') query = '') {
-    await this.requireTenant(tenantId);
-    const q = query.trim();
-    if (q.length < 2) throw new BadRequestException('Digite pelo menos 2 caracteres.');
-
-    return runWithTenant(tenantId, async () => {
-      const cleanDigits = q.replace(/\D/g, '');
-      const isDoc = cleanDigits.length === 11 || cleanDigits.length === 14;
-      const isPhone = !isDoc && cleanDigits.length >= 10 && cleanDigits.length <= 11;
-
-      const customer = await this.erp.findCustomer({
-        document: isDoc ? cleanDigits : undefined,
-        phone: isPhone ? cleanDigits : undefined,
-        contractId: !isDoc && !isPhone ? q : undefined,
-      });
-
-      if (!customer) {
-        return { found: false };
-      }
-
-      const contracts = await this.erp.getContracts(customer.id);
-      return {
-        found: true,
-        customer: {
-          id: customer.id,
-          name: customer.name,
-          document: customer.document,
-          phones: customer.phones,
-          contracts: contracts.map((c) => ({
-            id: c.id,
-            planName: c.planName,
-            status: c.status,
-            address: c.address,
-          })),
-        },
-      };
-    });
+  @Get('config')
+  config() {
+    this.assertEnabled();
+    return {
+      phoneIdentifies: trustWebchatPhone(),
+      sessionTokenRequired: isProduction(),
+      demoEndpoints: demoEndpointsEnabled(),
+    };
   }
 
-  /**
-   * Inicia sessão no webchat como cliente específico do SGP.
-   */
-  @Public()
-  @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  @Post(':tenantId/sgp-simulate')
-  async sgpSimulate(@Param('tenantId') tenantId: string, @Body() body: { customerId?: string; phone?: string; contractId?: string }) {
-    await this.requireTenant(tenantId);
-    return runWithTenant(tenantId, async () => {
-      const custId = body.customerId || body.phone || body.contractId;
-      if (!custId) throw new BadRequestException('Informe customerId, phone ou contractId.');
-
-      const customer =
-        (await this.erp.findCustomer({
-          contractId: body.contractId,
-          phone: body.phone,
-        })) || (await this.erp.getCustomer(custId));
-
-      if (!customer) throw new NotFoundException('Cliente não localizado no SGP.');
-
-      const channelUserId = customer.phones[0] || `sgp:${customer.id}`;
-      return {
-        channelUserId,
-        customerName: customer.name,
-        customerId: customer.id,
-      };
-    });
-  }
-
-  // Web Chat de teste: escolher o provedor (ex.: Vibe), buscar um cliente do PulseISP dele e conversar
-  @Public()
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @Get(':tenantId/pulse-customers')
-  async pulseCustomers(@Param('tenantId') tenantId: string, @Query('search') search = '') {
-    await this.requireTenant(tenantId);
-    if (search.trim().length < 2) throw new BadRequestException('Digite pelo menos 2 caracteres.');
-    return runWithTenant(tenantId, async () => {
-      try {
-        return await this.pulse.searchCustomers(tenantId, search);
-      } catch (err) {
-        throw pulseError(err);
-      }
-    });
-  }
-
-  @Public()
-  @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  @Post(':tenantId/pulse-simulate')
-  async pulseSimulate(@Param('tenantId') tenantId: string, @Body() body: { customerId?: string }) {
-    await this.requireTenant(tenantId);
-    if (!body?.customerId) throw new BadRequestException('customerId obrigatório.');
-    return runWithTenant(tenantId, async () => {
-      try {
-        const c360 = await this.pulse.customer360(tenantId, body.customerId as string);
-        return await this.mirror.upsertFromCustomer360(tenantId, c360);
-      } catch (err) {
-        throw pulseError(err);
-      }
-    });
-  }
-
-  // Toda mensagem aciona classifyIntent + possivelmente composeReply (LLM real, quando configurado) +
-  // execução de ferramenta — sem limite, é uma rota pública que vira máquina de gastar tokens/dinheiro.
-  // 20 mensagens por minuto por IP é generoso pra um humano testando, apertado pra um script abusando.
   @Public()
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post(':tenantId/message')
-  async sendMessage(@Param('tenantId') tenantId: string, @Body() dto: WebchatMessageDto) {
-    await this.requireTenant(tenantId);
-
-    return runWithTenant(tenantId, async () => {
-      const conv = await this.conversation.findOrCreateConversation('WEBCHAT', dto.channelUserId);
-      const decision = await this.orchestrator.handleMessage(conv.id, dto.message);
-      const [messages, refreshed] = await Promise.all([
-        this.db.client.message.findMany({ where: { conversationId: conv.id }, orderBy: { createdAt: 'asc' } }),
-        this.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }),
-      ]);
-      // `status` fresco (não o `conv` capturado antes de handleMessage rodar) — o Web Chat usa isto
-      // pra saber, sem precisar recarregar a página, que a IA parou de responder (HUMAN_ACTIVE) ou que
-      // a conversa entrou na fila humana (HANDOFF_PENDING).
-      return { conversationId: conv.id, decision, messages, status: refreshed.status };
-    });
+  async sendMessage(
+    @Param('tenantId') tenantId: string,
+    @Body() dto: WebchatMessageDto,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
+  ) {
+    return this.withConversation(tenantId, dto.channelUserId, req, token, async (convId) => ({
+      decision: await this.orchestrator.handleMessage(convId, dto.message),
+    }));
   }
 
+  // Leitura pura: nunca cria conversa (um GET não pode ter efeito colateral).
   @Public()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get(':tenantId/conversation/:channelUserId')
   async getConversation(
     @Param('tenantId') tenantId: string,
     @Param('channelUserId') channelUserId: string,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
   ) {
+    this.assertEnabled();
     await this.requireTenant(tenantId);
+    this.assertChannelUserAllowed(tenantId, channelUserId, req);
 
     return runWithTenant(tenantId, async () => {
-      const conv = await this.conversation.findOrCreateConversation('WEBCHAT', channelUserId);
+      const conv = await this.findOpenConversation(channelUserId);
+      if (!conv) return { conversationId: null, status: null, messages: [] };
+      this.assertSession(tenantId, channelUserId, req, token, true);
+
       const messages = await this.db.client.message.findMany({
         where: { conversationId: conv.id },
         orderBy: { createdAt: 'asc' },
@@ -189,23 +173,30 @@ export class WebchatController {
     });
   }
 
+  // "Resetar conversa" do DEMO. Em produção só um supervisor logado pode apagar (sem login = 404).
   @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Delete(':tenantId/conversation/:channelUserId')
   async resetConversation(
     @Param('tenantId') tenantId: string,
     @Param('channelUserId') channelUserId: string,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
   ) {
+    this.assertEnabled();
     await this.requireTenant(tenantId);
+    this.assertChannelUserAllowed(tenantId, channelUserId, req);
+
+    const staff = this.staffOf(tenantId, req, 'SUPERVISOR');
+    if (!demoEndpointsEnabled() && !staff) throw new NotFoundException();
 
     return runWithTenant(tenantId, async () => {
       const existing = await this.db.client.conversation.findMany({
         where: { channel: 'WEBCHAT', channelUserId },
       });
+      if (existing.length > 0 && !staff) this.assertSession(tenantId, channelUserId, req, token, true);
 
-      // Mesma ordem de limpeza segura de FK usada em test/conversation.spec.ts (resetConversationsFor):
-      // ToolCall -> AgentRun/Handoff -> Message -> Conversation. Botão "Resetar" do Web Chat DEMO
-      // (seção 6.3): reinicia o teste ponta a ponta sem depender de WhatsApp nem de outro telefone.
+      // Ordem de limpeza segura de FK: ToolCall -> AgentRun/Handoff/filhos -> Message -> Conversation.
       for (const conv of existing) {
         const runs = await this.db.client.agentRun.findMany({ where: { conversationId: conv.id } });
         for (const run of runs) {
@@ -213,180 +204,242 @@ export class WebchatController {
         }
         await this.db.client.agentRun.deleteMany({ where: { conversationId: conv.id } });
         await this.db.client.handoff.deleteMany({ where: { conversationId: conv.id } });
+        await this.db.client.satisfactionSurvey.deleteMany({ where: { conversationId: conv.id } });
+        await this.db.client.cancellationRequest.deleteMany({ where: { conversationId: conv.id } });
         await this.db.client.message.deleteMany({ where: { conversationId: conv.id } });
         await this.db.client.conversation.delete({ where: { id: conv.id } });
       }
+
+      await this.db.client.auditLog.create({
+        data: {
+          tenantId,
+          actorType: staff ? 'USER' : 'SYSTEM',
+          actorId: staff?.userId ?? null,
+          action: 'webchat.conversation_reset',
+          entityType: 'Conversation',
+          metadata: { conversationsRemoved: existing.length },
+        },
+      });
 
       return { reset: true, conversationsRemoved: existing.length };
     });
   }
 
+  /** Pesquisa de satisfação (CSAT) ao encerrar: só da PRÓPRIA conversa aberta do canal/sessão. */
   @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post(':tenantId/survey')
   async submitSurvey(
     @Param('tenantId') tenantId: string,
-    @Body() body: { conversationId: string; rating: number; comment?: string; tags?: string[] },
+    @Body() dto: SurveyDto,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
   ) {
+    this.assertEnabled();
     await this.requireTenant(tenantId);
-    if (!body?.conversationId || typeof body?.rating !== 'number') {
-      throw new BadRequestException('conversationId e rating são obrigatórios.');
-    }
-    const rating = Math.max(1, Math.min(5, Math.round(body.rating)));
+    this.assertChannelUserAllowed(tenantId, dto.channelUserId, req);
 
     return runWithTenant(tenantId, async () => {
-      const conv = await this.db.client.conversation.findUnique({
-        where: { id: body.conversationId },
-      });
+      const conv = await this.findOpenConversation(dto.channelUserId);
       if (!conv) throw new NotFoundException('Conversa não encontrada.');
+      this.assertSession(tenantId, dto.channelUserId, req, token, true);
 
       const survey = await this.db.client.satisfactionSurvey.create({
         data: {
           tenantId,
           conversationId: conv.id,
-          score: rating,
-          feedback: body.comment?.trim() || null,
+          score: dto.rating,
+          feedback: dto.comment?.trim() || null,
         },
       });
-
-      if (conv.status !== 'CLOSED') {
-        await this.db.client.conversation.update({
-          where: { id: conv.id },
-          data: { status: 'CLOSED' },
-        });
-      }
+      await this.db.client.conversation.update({ where: { id: conv.id }, data: { status: 'CLOSED' } });
 
       return { success: true, surveyId: survey.id };
     });
   }
 
+  /** Aviso proativo: o serviço do cliente identificado nesta conversa está sem sinal agora? */
   @Public()
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get(':tenantId/incident-check/:channelUserId')
   async checkIncident(
     @Param('tenantId') tenantId: string,
     @Param('channelUserId') channelUserId: string,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
   ) {
+    this.assertEnabled();
     await this.requireTenant(tenantId);
+    this.assertChannelUserAllowed(tenantId, channelUserId, req);
+
     return runWithTenant(tenantId, async () => {
-      const conv = await this.db.client.conversation.findFirst({
-        where: { channel: 'WEBCHAT', channelUserId },
-        include: { customer: { include: { contracts: true } } },
-      });
+      const conv = await this.findOpenConversation(channelUserId);
+      if (!conv?.contractId) return { hasIncident: false };
+      this.assertSession(tenantId, channelUserId, req, token, true);
 
-      if (!conv?.customer?.contracts?.length) {
-        return { hasIncident: false };
-      }
-
-      const contract = conv.customer.contracts.find((c: any) => c.status === 'ACTIVE') || conv.customer.contracts[0];
-      const status = await this.erp.getServiceStatus(contract.id);
-
-      if (status && !status.online) {
+      // Status desconhecido (null) não é incidente: só avisa o que o ERP confirmou.
+      const status = await this.erp.getServiceStatus(conv.contractId).catch(() => null);
+      if (status && status.online === false) {
         return {
           hasIncident: true,
           severity: 'warning',
-          title: 'Aviso de Manutenção / Sinal Indisponível',
-          message: 'Detectamos que a sua conexão PON/fibra está sem sinal no momento. Nossos técnicos já estão cientes e atuando na normalização.',
+          title: 'Sinal indisponível',
+          message:
+            'Identificamos que a sua conexão está sem sinal no momento. Se precisar, é só me contar o que está acontecendo por aqui.',
         };
       }
-
       return { hasIncident: false };
     });
   }
 
   /**
-   * Upload e processamento OCR multimodal de comprovante de pagamento via WebChat.
+   * Comprovante de pagamento (foto/PDF). A leitura automática é só um indício para o atendente — a imagem
+   * vem do cliente e pode ser forjada, então o texto registrado deixa claro que não foi confirmada.
    */
   @Public()
-  @Throttle({ default: { limit: 15, ttl: 60_000 } })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post(':tenantId/upload-receipt')
   async uploadReceipt(
     @Param('tenantId') tenantId: string,
-    @Body() body: { channelUserId: string; fileBase64: string; mimeType?: string; filename?: string },
+    @Body() dto: ReceiptDto,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
   ) {
-    await this.requireTenant(tenantId);
-    if (!body?.channelUserId || !body?.fileBase64) {
-      throw new BadRequestException('channelUserId e fileBase64 são obrigatórios.');
-    }
-
-    return runWithTenant(tenantId, async () => {
-      const conv = await this.conversation.findOrCreateConversation('WEBCHAT', body.channelUserId);
+    return this.withConversation(tenantId, dto.channelUserId, req, token, async (convId) => {
       const ai = await this.aiResolver.resolve(tenantId);
-
-      let receiptAnalysis: any = null;
-      let textContent = '[Comprovante de pagamento anexado pelo cliente]';
-
+      let receiptAnalysis: ReceiptAnalysisResult | null = null;
       if (typeof ai.analyzeReceipt === 'function') {
-        try {
-          receiptAnalysis = await ai.analyzeReceipt(body.fileBase64, body.mimeType || 'image/jpeg');
-          const amountStr = receiptAnalysis.amount ? `R$ ${receiptAnalysis.amount.toFixed(2)}` : 'valor não identificado';
-          const dateStr = receiptAnalysis.date || 'data atual';
-          const authStr = receiptAnalysis.authCode ? ` (Aut: ${receiptAnalysis.authCode})` : '';
-          textContent = `[Comprovante enviado pelo cliente - ${amountStr}, Data: ${dateStr}${authStr}]. Já efetuei o pagamento, segue comprovante para validação e desbloqueio da minha conexão.`;
-        } catch (err) {
-          textContent = '[Comprovante de pagamento anexado pelo cliente] Acabei de enviar o comprovante de pagamento.';
-        }
+        receiptAnalysis = await ai.analyzeReceipt(dto.fileBase64, dto.mimeType || 'image/jpeg').catch(() => null);
       }
 
-      const decision = await this.orchestrator.handleMessage(conv.id, textContent);
-      const [messages, refreshed] = await Promise.all([
-        this.db.client.message.findMany({ where: { conversationId: conv.id }, orderBy: { createdAt: 'asc' } }),
-        this.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }),
-      ]);
+      let text = '[Comprovante de pagamento enviado pelo cliente — leitura automática indisponível].';
+      if (receiptAnalysis?.isValid) {
+        const amount = receiptAnalysis.amount
+          ? `R$ ${receiptAnalysis.amount.toFixed(2).replace('.', ',')}`
+          : 'valor não identificado';
+        const date = receiptAnalysis.date ?? 'data não identificada';
+        text = `[Comprovante de pagamento enviado pelo cliente — leitura automática, não confirmada: ${amount}, ${date}].`;
+      } else if (receiptAnalysis) {
+        text = '[Arquivo enviado pelo cliente como comprovante — a leitura automática não reconheceu um pagamento].';
+      }
+      const message = `${text} Já efetuei o pagamento, segue o comprovante.`;
 
-      return {
-        conversationId: conv.id,
-        receiptAnalysis,
-        decision,
-        messages,
-        status: refreshed.status,
-      };
+      return { receiptAnalysis, decision: await this.orchestrator.handleMessage(convId, message) };
     });
   }
 
-  /**
-   * Processamento e transcrição de áudio/voz via WebChat.
-   */
+  /** Mensagem de voz: transcreve e segue como texto. Sem transcrição, pede para escrever — nunca inventa. */
   @Public()
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post(':tenantId/voice')
   async sendVoiceNote(
     @Param('tenantId') tenantId: string,
-    @Body() body: { channelUserId: string; audioBase64: string; mimeType?: string },
+    @Body() dto: VoiceDto,
+    @Req() req: Request,
+    @Headers('x-webchat-token') token?: string,
   ) {
-    await this.requireTenant(tenantId);
-    if (!body?.channelUserId || !body?.audioBase64) {
-      throw new BadRequestException('channelUserId e audioBase64 são obrigatórios.');
-    }
-
-    return runWithTenant(tenantId, async () => {
-      const conv = await this.conversation.findOrCreateConversation('WEBCHAT', body.channelUserId);
+    const mimeType = (dto.mimeType || 'audio/webm').split(';')[0].trim().toLowerCase();
+    return this.withConversation(tenantId, dto.channelUserId, req, token, async (convId, status) => {
       const ai = await this.aiResolver.resolve(tenantId);
-
       let transcription = '';
-      if (typeof ai.transcribeAudio === 'function') {
-        try {
-          transcription = await ai.transcribeAudio(body.audioBase64, body.mimeType || 'audio/webm');
-        } catch (err) {
-          transcription = 'Gostaria de verificar o status da minha conexão.';
-        }
+      if (AUDIO_MIME.includes(mimeType) && typeof ai.transcribeAudio === 'function') {
+        transcription = (await ai.transcribeAudio(dto.audioBase64, mimeType).catch(() => '')).trim().slice(0, 2000);
       }
 
-      const messageText = `[Áudio enviado pelo cliente]: "${transcription || 'Olá, preciso de suporte.'}"`;
-      const decision = await this.orchestrator.handleMessage(conv.id, messageText);
+      if (!transcription) {
+        await this.conversation.appendMessage(convId, 'CUSTOMER', '[Áudio enviado pelo cliente — não foi possível transcrever]');
+        if (status !== 'HUMAN_ACTIVE') await this.conversation.appendMessage(convId, 'AGENT', AUDIO_NOT_UNDERSTOOD);
+        return { transcription: null, decision: null };
+      }
+
+      return {
+        transcription,
+        decision: await this.orchestrator.handleMessage(convId, `[Áudio transcrito]: ${transcription}`),
+      };
+    });
+  }
+
+  /**
+   * Fluxo comum das rotas que escrevem na conversa: canal habilitado, tenant existe, prefixo permitido,
+   * sessão válida (produção), conversa aberta (ou nova) e resposta com mensagens + status atualizados.
+   */
+  private async withConversation<T extends object>(
+    tenantId: string,
+    channelUserId: string,
+    req: Request,
+    token: string | undefined,
+    handler: (conversationId: string, status: string) => Promise<T>,
+  ) {
+    this.assertEnabled();
+    await this.requireTenant(tenantId);
+    this.assertChannelUserAllowed(tenantId, channelUserId, req);
+
+    return runWithTenant(tenantId, async () => {
+      const existing = await this.findOpenConversation(channelUserId);
+      this.assertSession(tenantId, channelUserId, req, token, existing !== null);
+
+      const conv = existing ?? (await this.conversation.findOrCreateConversation('WEBCHAT', channelUserId));
+      const result = await handler(conv.id, conv.status);
       const [messages, refreshed] = await Promise.all([
         this.db.client.message.findMany({ where: { conversationId: conv.id }, orderBy: { createdAt: 'asc' } }),
         this.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }),
       ]);
-
+      // `status` fresco — o Web Chat usa isto para saber, sem recarregar, que a IA parou de responder
+      // (HUMAN_ACTIVE) ou que a conversa entrou na fila humana (HANDOFF_PENDING).
       return {
         conversationId: conv.id,
-        transcription,
-        decision,
+        ...result,
         messages,
         status: refreshed.status,
+        ...(isProduction() ? { sessionToken: issueWebchatToken(tenantId, channelUserId) } : {}),
       };
     });
+  }
+
+  private assertEnabled() {
+    if (!webchatPublicEnabled()) throw new NotFoundException();
+  }
+
+  private findOpenConversation(channelUserId: string) {
+    return this.db.client.conversation.findFirst({
+      where: { channel: 'WEBCHAT', channelUserId, status: { not: 'CLOSED' } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /** Staff logado (JWT lido pelo middleware) do MESMO tenant da URL e com papel mínimo, ou `null`. */
+  private staffOf(tenantId: string, req: Request, minRole: Role) {
+    const user = req.user;
+    if (!user || user.tenantId !== tenantId) return null;
+    return ROLE_HIERARCHY[user.role as Role] >= ROLE_HIERARCHY[minRole] ? user : null;
+  }
+
+  private isReserved(channelUserId: string) {
+    return RESERVED_PREFIXES.some((p) => channelUserId.startsWith(p));
+  }
+
+  private assertChannelUserAllowed(tenantId: string, channelUserId: string, req: Request) {
+    if (!CHANNEL_USER_ID.test(channelUserId)) throw new ForbiddenException('channelUserId inválido.');
+
+    if (this.isReserved(channelUserId)) {
+      if (!this.staffOf(tenantId, req, 'TENANT_ADMIN')) {
+        throw new ForbiddenException('Este canal é reservado ao simulador do painel (exige login de administrador).');
+      }
+      return;
+    }
+    // Em produção o id é uma sessão aleatória, nunca um telefone/valor adivinhável.
+    if (isProduction() && !/^[A-Za-z0-9_-]{16,64}$/.test(channelUserId)) {
+      throw new ForbiddenException('channelUserId precisa ser um identificador de sessão aleatório.');
+    }
+  }
+
+  /** Em produção, conversa existente só é acessível com o token emitido quando ela foi criada. */
+  private assertSession(tenantId: string, channelUserId: string, req: Request, token: string | undefined, exists: boolean) {
+    if (!isProduction() || !exists) return;
+    if (this.isReserved(channelUserId) && this.staffOf(tenantId, req, 'TENANT_ADMIN')) return;
+    if (!isValidWebchatToken(tenantId, channelUserId, token)) {
+      throw new ForbiddenException('Sessão do chat inválida.');
+    }
   }
 
   private async requireTenant(tenantId: string) {
@@ -394,9 +447,4 @@ export class WebchatController {
     if (!tenant) throw new NotFoundException('Tenant não encontrado');
     return tenant;
   }
-}
-
-function pulseError(err: unknown): Error {
-  if (err instanceof PulseIspError) return new BadRequestException(err.message);
-  return err instanceof Error ? err : new Error(String(err));
 }

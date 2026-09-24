@@ -152,7 +152,9 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
     await prisma.$connect();
     db = new TenantPrismaService(prisma);
     await prisma.tenant.upsert({ where: { id: TENANT }, create: { id: TENANT, name: 'Teste PulseISP real' }, update: {} });
-    await prisma.tenantPolicyConfig.upsert({ where: { tenantId: TENANT }, create: { tenantId: TENANT }, update: {} });
+    // Os cenários de oferta de chamado exigem chamados habilitados (o padrão agora é `readOnlyMode`).
+    const ticketsOn = { readOnlyMode: false, canCreateTicket: true };
+    await prisma.tenantPolicyConfig.upsert({ where: { tenantId: TENANT }, create: { tenantId: TENANT, ...ticketsOn }, update: ticketsOn });
     await wipe();
 
     mirror = new PulseIspMirrorService(db);
@@ -264,7 +266,7 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
   it('continuação: "que sinal?" depois do diagnóstico explica em linguagem simples (sem dBm), não cai na saudação', async () => {
     const { decisions, replies } = await conversation(['minha internet fica caindo toda hora', 'que sinal?']);
     expect(decisions[1].intent).toBe('QUEDAS');
-    expect(replies[1]).toMatch(/explicando melhor/);
+    expect(replies[1]).toMatch(/mais fraca ou instável/);
     expect(replies[1]).not.toMatch(/dBm|-29|Consigo ajudar com/);
   });
 
@@ -284,8 +286,21 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
     expect(replies[1]).toMatch(/Tudo bem/);
   });
 
-  it('sem diagnóstico antes, "que sinal?" continua recebendo a orientação geral', async () => {
+  it('sem diagnóstico antes, "que sinal?" recebe orientação (geral ou da base de conhecimento), nunca dado técnico', async () => {
     const { replies } = await conversation(['que sinal?']);
-    expect(replies[0]).toMatch(/Consigo ajudar com/);
+    expect(replies[0]).toMatch(/Consigo ajudar com|sinal/);
+    expect(replies[0]).not.toMatch(/dBm|-29/);
+  });
+
+  it('com a policy em modo somente leitura, o agente não oferece chamado e "sim" não abre nada', async () => {
+    await prisma.tenantPolicyConfig.update({ where: { tenantId: TENANT }, data: { readOnlyMode: true } });
+    try {
+      const { decisions, replies, handoffs } = await conversation(['minha internet fica caindo toda hora', 'sim']);
+      expect(replies[0]).not.toMatch(/abr[ae] um chamado|abrir o chamado/i);
+      expect(decisions[1].intent).not.toBe('CHAMADO');
+      expect(handoffs).toBe(0);
+    } finally {
+      await prisma.tenantPolicyConfig.update({ where: { tenantId: TENANT }, data: { readOnlyMode: false } });
+    }
   });
 });
