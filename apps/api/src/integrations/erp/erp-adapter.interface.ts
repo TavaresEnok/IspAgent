@@ -35,4 +35,6 @@ export interface ERPAdapter {
     idempotencyKey: string;
   }): Promise<SupportTicket>;
   getServiceStatus(contractId: string): Promise<ServiceStatus | null>;
+  getOpticalPower?(contractId: string): Promise<{ rxPower: number; txPower?: number; status: string; assessment: 'EXCELLENT' | 'GOOD' | 'ATTENUATED' | 'CRITICAL_LOS' } | null>;
+  requestPromiseToPay?(contractId: string, cpfcnpj?: string): Promise<{ success: boolean; message: string; deadline?: string }>;
 }

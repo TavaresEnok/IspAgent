@@ -26,13 +26,15 @@ export class HandoffService {
    * Idempotente por conversa: se já existe um handoff `PENDING` para esta conversa, devolve ele em vez
    * de criar outro (evita duplicar entrada na fila quando vários turnos seguidos precisam de humano).
    */
-  async createHandoff(conversationId: string, reason: string, summary: HandoffSummary) {
+  async createHandoff(conversationId: string, reason: string, summary: HandoffSummary, department?: string) {
     const tenantId = this.requireTenantId();
 
     const existing = await this.db.client.handoff.findFirst({
       where: { conversationId, status: 'PENDING' },
     });
     if (existing) return existing;
+
+    const assignedDepartment = department || this.resolveDepartment(summary);
 
     const handoff = await this.db.client.handoff.create({
       data: {
@@ -41,6 +43,7 @@ export class HandoffService {
         reason,
         summary: summary as unknown as object,
         status: 'PENDING',
+        department: assignedDepartment,
       },
     });
 
@@ -56,7 +59,7 @@ export class HandoffService {
         action: 'handoff.created',
         entityType: 'Handoff',
         entityId: handoff.id,
-        metadata: { conversationId, reason },
+        metadata: { conversationId, reason, department: assignedDepartment },
       },
     });
 
@@ -68,15 +71,34 @@ export class HandoffService {
         conversationId,
         reason,
         summary,
+        department: assignedDepartment,
       },
     });
 
     return handoff;
   }
 
-  async listQueue(status: 'PENDING' | 'ASSUMED' | 'RETURNED_TO_AI' | 'CLOSED' = 'PENDING') {
+  private resolveDepartment(summary?: HandoffSummary): string {
+    const intent = summary?.intent;
+    if (['FINANCEIRO', 'SEGUNDA_VIA', 'PAGAMENTO', 'BLOQUEIO'].includes(intent as any)) {
+      return 'FINANCEIRO';
+    }
+    if (intent === 'CANCELAMENTO') {
+      return 'RETENCAO';
+    }
+    if (['UPGRADE', 'CONTRATACAO', 'PLANO'].includes(intent as any)) {
+      return 'COMERCIAL';
+    }
+    return 'SUPORTE_TECNICO';
+  }
+
+  async listQueue(status: 'PENDING' | 'ASSUMED' | 'RETURNED_TO_AI' | 'CLOSED' = 'PENDING', department?: string) {
+    const where: any = { status };
+    if (department && department !== 'ALL' && department !== 'TODOS') {
+      where.department = department;
+    }
     return this.db.client.handoff.findMany({
-      where: { status },
+      where,
       orderBy: { createdAt: 'asc' },
     });
   }

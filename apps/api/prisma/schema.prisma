@@ -383,19 +383,21 @@ model ToolCall {
 }
 
 model Handoff {
-  id             String       @id @default(uuid())
-  tenantId       String
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
-  reason         String
-  summary        Json
-  status         String       @default("PENDING") // PENDING | ASSUMED | RETURNED_TO_AI | CLOSED
+  id              String       @id @default(uuid())
+  tenantId        String
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+  department      String       @default("SUPORTE_TECNICO") // SUPORTE_TECNICO | FINANCEIRO | RETENCAO | COMERCIAL | GERAL
+  reason          String
+  summary         Json
+  status          String       @default("PENDING") // PENDING | ASSUMED | RETURNED_TO_AI | CLOSED
   assumedByUserId String?
-  assumedAt      DateTime?
-  returnedAt     DateTime?
-  createdAt      DateTime     @default(now())
+  assumedAt       DateTime?
+  returnedAt      DateTime?
+  createdAt       DateTime     @default(now())
 
   @@index([tenantId])
+  @@index([tenantId, department])
   @@index([conversationId])
   @@map("handoffs")
 }

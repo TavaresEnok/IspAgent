@@ -5,9 +5,10 @@ import { ConversationModule } from '../conversation/conversation.module';
 import { AgentModule } from '../agent/agent.module';
 import { PulseISPModule } from '../integrations/pulseisp/pulseisp.module';
 import { ERPModule } from '../integrations/erp/erp.module';
+import { AiProviderModule } from '../integrations/ai/ai-provider.module';
 
 @Module({
-  imports: [ConversationModule, AgentModule, PulseISPModule, ERPModule],
+  imports: [ConversationModule, AgentModule, PulseISPModule, ERPModule, AiProviderModule],
   controllers: [WebchatController, WhatsAppController],
 })
 export class ChannelsModule {}

@@ -2,7 +2,9 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ERP_ADAPTER, ERPAdapter } from '../integrations/erp/erp-adapter.interface';
 import {
   createBillingTool,
+  createOpticalSignalTool,
   createPlanViewTool,
+  createPromiseToPayTool,
   createSupportCreateTicketTool,
   createSupportGetTicketsTool,
 } from './erp-tools';
@@ -17,11 +19,15 @@ export class ErpToolsService {
   readonly supportGetTicketsTool;
   readonly supportCreateTicketTool;
   readonly planViewTool;
+  readonly promiseToPayTool;
+  readonly opticalSignalTool;
 
   constructor(@Inject(ERP_ADAPTER) readonly erp: ERPAdapter) {
     this.billingTool = createBillingTool(erp);
     this.supportGetTicketsTool = createSupportGetTicketsTool(erp);
     this.supportCreateTicketTool = createSupportCreateTicketTool(erp);
     this.planViewTool = createPlanViewTool(erp);
+    this.promiseToPayTool = createPromiseToPayTool(erp);
+    this.opticalSignalTool = createOpticalSignalTool(erp);
   }
 }

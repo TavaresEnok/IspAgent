@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Intent } from '@ispagent/shared';
-import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
+import { AIProvider, ComposeReplyInput, IntentClassification, ReceiptAnalysisResult } from './ai-provider.interface';
 
 export const KEYWORD_RULES: Array<{ intent: Intent; keywords: string[] }> = [
   { intent: 'SEM_CONEXAO', keywords: ['sem internet', 'sem conexão', 'sem conexao', 'caiu a internet', 'não conecta', 'nao conecta', 'sem sinal', 'caiu a rede', 'não está funcionando'] },
@@ -193,5 +193,19 @@ export class MockAIProvider implements AIProvider {
     if (typeof value === 'boolean') return value ? 'sim' : 'não';
     if (value === null) return 'não informado';
     return String(value);
+  }
+
+  async transcribeAudio(audioBase64: string, mimeType = 'audio/ogg'): Promise<string> {
+    return 'Olá, minha internet está com sinal fraco e gostaria de verificar minha conexão.';
+  }
+
+  async analyzeReceipt(fileBase64: string, mimeType = 'image/jpeg'): Promise<ReceiptAnalysisResult> {
+    return {
+      isValid: true,
+      amount: 99.9,
+      date: new Date().toLocaleDateString('pt-BR'),
+      recipient: 'Vibe Telecom',
+      notes: 'Comprovante bancário PIX validado com sucesso',
+    };
   }
 }

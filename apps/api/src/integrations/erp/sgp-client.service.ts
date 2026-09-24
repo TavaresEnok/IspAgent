@@ -266,4 +266,43 @@ export class SgpClientService {
       os_prioridade: input.prioridade || 2,
     });
   }
+
+  /**
+   * Executa liberação em promessa de pagamento (desbloqueio em confiança de 48h).
+   * Endpoint: `POST /api/ura/liberacaopromessa/`
+   */
+  async liberarPromessa(contrato: string | number, cpfcnpj?: string): Promise<any> {
+    return this.request('POST', '/api/ura/liberacaopromessa/', {
+      contrato,
+      ...(cpfcnpj ? { cpfcnpj } : {}),
+    });
+  }
+
+  /**
+   * Consulta sinal óptico da ONU do contrato (potência RX/TX em dBm).
+   * Endpoint: `GET /api/fttx/onu/list/` com signal=1
+   */
+  async consultarSinalOnu(contrato: string | number): Promise<any> {
+    try {
+      return await this.request('GET', '/api/fttx/onu/list/', {
+        contrato,
+        signal: 1,
+      });
+    } catch (err) {
+      this.logger.warn(`Erro ao consultar sinal de ONU no SGP: ${err}`);
+      return null;
+    }
+  }
+
+  /**
+   * Adiciona anexo (ex: comprovante de pagamento) na ocorrência/chamado do cliente.
+   * Endpoint: `POST /api/central/chamado/{os_id}/anexo/add/`
+   */
+  async adicionarAnexoChamado(osId: string | number, fileB64: string, filename: string, descricao?: string): Promise<any> {
+    return this.request('POST', `/api/central/chamado/${encodeURIComponent(String(osId))}/anexo/add/`, {
+      file_b64: fileB64,
+      filename,
+      descricao: descricao || 'Comprovante anexado pelo cliente via Chat',
+    });
+  }
 }

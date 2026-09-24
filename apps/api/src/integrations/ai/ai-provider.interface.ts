@@ -41,6 +41,15 @@ export interface ComposeReplyInput {
   intents?: Intent[];
 }
 
+export interface ReceiptAnalysisResult {
+  isValid: boolean;
+  amount?: number;
+  date?: string;
+  recipient?: string;
+  barcode?: string;
+  notes?: string;
+}
+
 /**
  * Abstração da seção 6.4. `MockAIProvider` funciona sempre, sem chave, e nunca se apresenta como IA
  * real (RunMode DEMO). `AnthropicProvider` é o provider real desta sessão (documentação oficial
@@ -54,4 +63,6 @@ export interface AIProvider {
   classifyIntent(message: string): Promise<IntentClassification>;
   classifyIntents?(message: string): Promise<{ intents: Intent[]; primary: Intent; confidence: Confidence }>;
   composeReply(input: ComposeReplyInput): Promise<string>;
+  transcribeAudio?(audioBase64: string, mimeType?: string): Promise<string>;
+  analyzeReceipt?(fileBase64: string, mimeType?: string): Promise<ReceiptAnalysisResult>;
 }

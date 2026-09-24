@@ -262,19 +262,79 @@ export default function WebChatPage() {
     }
   }
 
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text);
-    setCopiedText(text);
-    setTimeout(() => setCopiedText(null), 2500);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
+  const [recordingVoice, setRecordingVoice] = useState(false);
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingReceipt(true);
+    setError(null);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = (reader.result as string).split(',')[1];
+        const res = await fetch(`${API_URL}/public/webchat/${VIBE_TENANT}/upload-receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channelUserId: phone,
+            fileBase64: base64,
+            mimeType: file.type || 'image/jpeg',
+            filename: file.name,
+          }),
+        });
+        if (!res.ok) {
+          setError(`Erro ao enviar comprovante (${res.status})`);
+          return;
+        }
+        const data = await res.json();
+        setMessages(data.messages || []);
+        if (data.status) setConversationStatus(data.status);
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      setError('Falha ao processar arquivo');
+    } finally {
+      setUploadingReceipt(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  async function handleVoiceSimulate() {
+    if (recordingVoice || sending) return;
+    setRecordingVoice(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/public/webchat/${VIBE_TENANT}/voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channelUserId: phone,
+          audioBase64: 'bW9ja192b2ljZV9ub3RlX2Zyb21fd2ViY2hhdA==',
+          mimeType: 'audio/webm',
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessages(data.messages || []);
+        if (data.status) setConversationStatus(data.status);
+      }
+    } catch {
+      setError('Falha ao enviar áudio');
+    } finally {
+      setRecordingVoice(false);
+    }
   }
 
   // Quick action prompts
   const QUICK_ACTIONS = [
+    { label: '⚡ Desbloqueio em Confiança', prompt: 'Já paguei minha fatura e solicito o desbloqueio em confiança' },
+    { label: '📶 Diagnóstico Óptico (dBm)', prompt: 'Pode verificar o sinal óptico da minha ONU fibra e o status da conexão?' },
     { label: '📄 2ª Via de Fatura', prompt: 'Gostaria da segunda via da minha fatura' },
     { label: '💸 Gerar PIX', prompt: 'Preciso do código PIX da minha fatura para pagar agora' },
-    { label: '📶 Internet Lenta', prompt: 'Minha internet está com instabilidade e lentidão' },
     { label: '🚀 Detalhes do Plano', prompt: 'Qual é o meu plano de internet contratado?' },
-    { label: '🛠️ Abrir Chamado', prompt: 'Quero solicitar a visita de um técnico de suporte' },
   ];
 
   // Identificação inicial / Tela de boas-vindas
@@ -618,14 +678,49 @@ export default function WebChatPage() {
           }}
           className="flex items-center gap-2"
         >
+          {/* Input oculto para upload de comprovante */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            accept="image/*,application/pdf"
+            className="hidden"
+          />
+
+          {/* Botão de Anexo / Comprovante */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingReceipt || sending}
+            title="Enviar comprovante de pagamento (Imagem ou PDF)"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-base text-slate-300 hover:border-cyan-500/50 hover:bg-slate-800 hover:text-white transition disabled:opacity-40"
+          >
+            {uploadingReceipt ? '⏳' : '📎'}
+          </button>
+
+          {/* Botão de Áudio / Mensagem de voz */}
+          <button
+            type="button"
+            onClick={handleVoiceSimulate}
+            disabled={recordingVoice || sending}
+            title="Enviar mensagem de voz (Transcrição com IA)"
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-base transition disabled:opacity-40 ${
+              recordingVoice ? 'text-red-400 border-red-500 animate-pulse bg-red-950/40' : 'text-slate-300 hover:border-cyan-500/50 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            {recordingVoice ? '🔴' : '🎙️'}
+          </button>
+
           <input
             ref={inputRef}
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={sending}
+            disabled={sending || uploadingReceipt}
             placeholder={
-              conversationStatus === 'HUMAN_ACTIVE'
+              uploadingReceipt
+                ? 'Analisando comprovante com IA...'
+                : conversationStatus === 'HUMAN_ACTIVE'
                 ? 'Converse diretamente com o atendente...'
                 : 'Digite sua mensagem ou CPF/código...'
             }
@@ -633,8 +728,8 @@ export default function WebChatPage() {
           />
           <button
             type="submit"
-            disabled={!input.trim() || sending}
-            className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 font-bold text-white shadow-md shadow-cyan-500/20 hover:brightness-110 active:scale-95 disabled:opacity-40 transition"
+            disabled={!input.trim() || sending || uploadingReceipt}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 font-bold text-white shadow-md shadow-cyan-500/20 hover:brightness-110 active:scale-95 disabled:opacity-40 transition"
           >
             ➤
           </button>

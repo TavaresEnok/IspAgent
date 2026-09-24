@@ -203,4 +203,22 @@ export class MockERPAdapter implements ERPAdapter {
       updatedAt: t.updatedAt.toISOString(),
     };
   }
+
+  async getOpticalPower(contractId: string): Promise<{ rxPower: number; txPower?: number; status: string; assessment: 'EXCELLENT' | 'GOOD' | 'ATTENUATED' | 'CRITICAL_LOS' } | null> {
+    return {
+      rxPower: -19.5,
+      txPower: 2.2,
+      status: 'NORMAL',
+      assessment: 'EXCELLENT',
+    };
+  }
+
+  async requestPromiseToPay(contractId: string, cpfcnpj?: string): Promise<{ success: boolean; message: string; deadline?: string }> {
+    const deadline = new Date(Date.now() + 48 * 3600 * 1000).toLocaleDateString('pt-BR');
+    return {
+      success: true,
+      message: `Desbloqueio em confiança de 48 horas ativado com sucesso! Previsão de liberação: ${deadline}.`,
+      deadline,
+    };
+  }
 }

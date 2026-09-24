@@ -20,6 +20,7 @@ export const POLICY_ACTIONS: Record<string, PolicyActionSpec> = {
   'plan.view': { tier: 'READ' },
   'plan.change': { tier: 'WRITE_SENSITIVE', configFlag: 'canChangePlan' },
   'account.unlock': { tier: 'WRITE_SENSITIVE', configFlag: 'canPerformUnlock' },
+  'billing.unlock': { tier: 'WRITE_LOW_RISK', configFlag: 'canPerformUnlock' },
   'network.diagnostic': { tier: 'READ' },
   'pulseisp.query': { tier: 'READ', configFlag: 'canQueryPulseISP' },
   'knowledge.search': { tier: 'READ' },

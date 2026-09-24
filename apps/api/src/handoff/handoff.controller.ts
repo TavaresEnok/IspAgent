@@ -7,6 +7,9 @@ class ListHandoffQueryDto {
   @IsOptional()
   @IsIn(['PENDING', 'ASSUMED', 'RETURNED_TO_AI', 'CLOSED'])
   status?: 'PENDING' | 'ASSUMED' | 'RETURNED_TO_AI' | 'CLOSED';
+
+  @IsOptional()
+  department?: string;
 }
 
 @Controller('handoff')
@@ -15,7 +18,7 @@ export class HandoffController {
 
   @Get('queue')
   async queue(@Query() query: ListHandoffQueryDto) {
-    return this.handoff.listQueue(query.status ?? 'PENDING');
+    return this.handoff.listQueue(query.status ?? 'PENDING', query.department);
   }
 
   @Post(':id/assume')

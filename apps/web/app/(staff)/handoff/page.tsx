@@ -8,6 +8,7 @@ interface HandoffRow {
   conversationId: string;
   reason: string;
   status: string;
+  department?: string;
   summary: {
     intent: string;
     reportedProblem: string;
@@ -17,17 +18,29 @@ interface HandoffRow {
   createdAt: string;
 }
 
+const DEPARTMENTS = [
+  { id: 'ALL', label: 'Todos os Departamentos' },
+  { id: 'SUPORTE_TECNICO', label: 'Suporte Técnico' },
+  { id: 'FINANCEIRO', label: 'Financeiro' },
+  { id: 'RETENCAO', label: 'Retenção' },
+  { id: 'COMERCIAL', label: 'Comercial' },
+];
+
 export default function HandoffQueuePage() {
   const [items, setItems] = useState<HandoffRow[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selectedDept, setSelectedDept] = useState<string>('ALL');
 
-  function load() {
-    apiFetch<HandoffRow[]>('/handoff/queue?status=PENDING')
+  function load(dept = selectedDept) {
+    const deptQuery = dept !== 'ALL' ? `&department=${dept}` : '';
+    apiFetch<HandoffRow[]>(`/handoff/queue?status=PENDING${deptQuery}`)
       .then(setItems)
       .catch(() => setItems([]));
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    load(selectedDept);
+  }, [selectedDept]);
 
   async function assume(id: string) {
     setBusyId(id);
@@ -39,13 +52,43 @@ export default function HandoffQueuePage() {
     }
   }
 
+  function getDeptBadge(dept?: string) {
+    switch (dept) {
+      case 'FINANCEIRO':
+        return 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
+      case 'RETENCAO':
+        return 'bg-rose-500/10 border-rose-500/30 text-rose-400';
+      case 'COMERCIAL':
+        return 'bg-purple-500/10 border-purple-500/30 text-purple-400';
+      default:
+        return 'bg-blue-500/10 border-blue-500/30 text-blue-400';
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-bold text-white tracking-tight">Fila de Atendimento Humano (Handoff)</h1>
         <p className="mt-0.5 text-xs text-slate-400">
-          Casos que exigem validação de atendente (solicitações complexas, negociações ou pedidos de humano).
+          Casos que exigem validação de atendente por departamento (suporte técnico, financeiro, retenção e comercial).
         </p>
+      </div>
+
+      {/* Abas de Departamentos */}
+      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
+        {DEPARTMENTS.map((d) => (
+          <button
+            key={d.id}
+            onClick={() => setSelectedDept(d.id)}
+            className={`rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
+              selectedDept === d.id
+                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-col gap-3">
@@ -53,6 +96,9 @@ export default function HandoffQueuePage() {
           <div key={h.id} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 backdrop-blur-md">
             <div className="mb-3 flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
+                <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${getDeptBadge(h.department)}`}>
+                  {h.department?.replace('_', ' ') || 'SUPORTE TÉCNICO'}
+                </span>
                 <span className="rounded-full bg-orange-500/10 border border-orange-500/30 px-2.5 py-0.5 text-xs font-semibold text-orange-400">
                   {h.summary.intent}
                 </span>

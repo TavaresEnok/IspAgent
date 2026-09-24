@@ -566,13 +566,34 @@ export class AgentOrchestratorService {
       // Cliente ainda não identificado: não faz busca de KB inútil nem gera handoff.
       // O bot vai solicitar ou reiterar a necessidade do CPF para poder dar prosseguimento.
     } else if (!aiFailed && accountAvailable && hasNetwork && hasAccount) {
-      // Cenário Multi-Intent: executa tanto diagnóstico de rede quanto consulta de fatura/conta
+      // Cenário Multi-Intent: executa diagnóstico de rede, sinal óptico e consulta de fatura/conta
       const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
       const decisionPulse = await this.policy.evaluate(pulseTool.action);
       policyDecisions.push(decisionPulse);
       toolResults.push(
         await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
       );
+
+      // Leitura da potência óptica da fibra (dBm / PON) em tempo real
+      const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
+      policyDecisions.push(opticalDecision);
+      if (opticalDecision.allowed) {
+        toolResults.push(
+          await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+        );
+      }
+
+      // Desbloqueio em confiança se solicitado
+      const isUnlockRequest = /(?:desbloque|libera|libera[cç][aã]o|confian[cç]a|j[aá] paguei|promessa|comprovante)/i.test(customerMessage);
+      if (isUnlockRequest) {
+        const unlockDecision = await this.policy.evaluate(this.erpTools.promiseToPayTool.action);
+        policyDecisions.push(unlockDecision);
+        if (unlockDecision.allowed) {
+          toolResults.push(
+            await this.executor.run(this.erpTools.promiseToPayTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+          );
+        }
+      }
 
       const accountIntent = detectedIntents.find((it) => ACCOUNT_INTENTS.includes(it)) || 'SEGUNDA_VIA';
       const dispatch = this.selectAccountTool(accountIntent);
@@ -589,6 +610,17 @@ export class AgentOrchestratorService {
         toolResults.push(toolResult);
       }
     } else if (!aiFailed && accountAvailable && ACCOUNT_INTENTS.includes(classification.intent)) {
+      const isUnlockRequest = /(?:desbloque|libera|libera[cç][aã]o|confian[cç]a|j[aá] paguei|promessa|comprovante)/i.test(customerMessage);
+      if (isUnlockRequest || classification.intent === 'BLOQUEIO') {
+        const unlockDecision = await this.policy.evaluate(this.erpTools.promiseToPayTool.action);
+        policyDecisions.push(unlockDecision);
+        if (unlockDecision.allowed) {
+          toolResults.push(
+            await this.executor.run(this.erpTools.promiseToPayTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+          );
+        }
+      }
+
       const dispatch = this.selectAccountTool(classification.intent);
       const decision = await this.policy.evaluate(dispatch.action);
       policyDecisions.push(decision);
@@ -606,15 +638,32 @@ export class AgentOrchestratorService {
         );
         toolResults.push(toolResult);
       }
-    } else if (!aiFailed && accountAvailable && NETWORK_INTENTS.includes(classification.intent) && (pulseIspEnabled() || realPulseContract)) {
-      // P0.4: só entra aqui quando a flag está ligada — desligada, cai no ramo de KnowledgeTool abaixo,
-      // exatamente como antes da Fase 7 (produto funciona sem PulseISP, seção 3.2).
-      const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
-      const decision = await this.policy.evaluate(pulseTool.action);
-      policyDecisions.push(decision);
-      toolResults.push(
-        await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
-      );
+    } else if (!aiFailed && accountAvailable && NETWORK_INTENTS.includes(classification.intent)) {
+      if (pulseIspEnabled() || realPulseContract) {
+        const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
+        const decision = await this.policy.evaluate(pulseTool.action);
+        policyDecisions.push(decision);
+        toolResults.push(
+          await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+        );
+      }
+
+      // Leitura da potência óptica da fibra (dBm / PON) em tempo real
+      const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
+      policyDecisions.push(opticalDecision);
+      if (opticalDecision.allowed) {
+        toolResults.push(
+          await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+        );
+      }
+
+      // Se não houver PulseISP ou faltar contexto, agrega busca na base de conhecimento
+      if (!pulseIspEnabled() && !realPulseContract) {
+        const kbTool = createKnowledgeSearchTool(this.knowledgeService);
+        const decisionKb = await this.policy.evaluate(kbTool.action);
+        policyDecisions.push(decisionKb);
+        toolResults.push(await this.executor.run(kbTool, { query: customerMessage }, { agentRunId: agentRun.id }));
+      }
     } else if (!aiFailed && !declined) {
       const kbTool = createKnowledgeSearchTool(this.knowledgeService);
       const decision = await this.policy.evaluate(kbTool.action);

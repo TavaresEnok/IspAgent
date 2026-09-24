@@ -141,3 +141,64 @@ export function createPlanViewTool(erp: ERPAdapter): ToolDefinition<{ customerId
     },
   };
 }
+
+export function createPromiseToPayTool(erp: ERPAdapter): ToolDefinition<{ contractId: string; cpfcnpj?: string }, unknown> {
+  return {
+    name: 'PromiseToPayTool',
+    action: 'billing.unlock',
+    inputSchema: z.object({ contractId: z.string().min(1), cpfcnpj: z.string().optional() }),
+    adapter: erp.name,
+    capability: 'promise_to_pay',
+    mode: erp.mode,
+    execute: async (input) => {
+      if (!erp.requestPromiseToPay) {
+        return { status: 'NOT_SUPPORTED', facts: [] };
+      }
+      const res = await erp.requestPromiseToPay(input.contractId, input.cpfcnpj);
+      const facts: Fact[] = [
+        { path: 'data.promiseToPay.success', label: 'Desbloqueio em confiança realizado', value: res.success },
+        { path: 'data.promiseToPay.message', label: 'Mensagem de liberação', value: res.message },
+      ];
+      if (res.deadline) {
+        facts.push({ path: 'data.promiseToPay.deadline', label: 'Data limite de liberação', value: res.deadline });
+      }
+      return { status: 'OK', data: res, facts };
+    },
+  };
+}
+
+export function createOpticalSignalTool(erp: ERPAdapter): ToolDefinition<{ contractId: string }, unknown> {
+  return {
+    name: 'OpticalSignalTool',
+    action: 'network.diagnostic',
+    inputSchema: z.object({ contractId: z.string().min(1) }),
+    adapter: erp.name,
+    capability: 'optical_power',
+    mode: erp.mode,
+    execute: async (input) => {
+      if (!erp.getOpticalPower) {
+        return { status: 'NOT_SUPPORTED', facts: [] };
+      }
+      const optical = await erp.getOpticalPower(input.contractId);
+      if (!optical) {
+        return { status: 'NOT_FOUND', facts: [] };
+      }
+      const diagText =
+        optical.assessment === 'EXCELLENT' || optical.assessment === 'GOOD'
+          ? 'Potência óptica excelente (-15 a -25 dBm), fibra íntegra sem atenuação'
+          : optical.assessment === 'ATTENUATED'
+          ? 'Atenuação óptica alta (-26 a -28 dBm) - possível dobra ou sujeira no conector'
+          : 'Alarme de LOS / Rompimento de Fibra (sinal óptico ausente)';
+
+      const facts: Fact[] = [
+        { path: 'data.optical.rxPower', label: 'Potência Óptica RX da ONU', value: `${optical.rxPower} dBm` },
+        { path: 'data.optical.status', label: 'Status da Porta Óptica', value: optical.status },
+        { path: 'data.optical.assessment', label: 'Diagnóstico da Fibra', value: diagText },
+      ];
+      if (optical.txPower !== undefined) {
+        facts.push({ path: 'data.optical.txPower', label: 'Potência Óptica TX', value: `${optical.txPower} dBm` });
+      }
+      return { status: 'OK', data: optical, facts };
+    },
+  };
+}

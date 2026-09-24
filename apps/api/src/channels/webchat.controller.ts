@@ -12,6 +12,7 @@ import { Public } from '../common/decorators/public.decorator';
 
 import { ERP_ADAPTER, ERPAdapter } from '../integrations/erp/erp-adapter.interface';
 import { Inject } from '@nestjs/common';
+import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
 
 class WebchatMessageDto {
   @IsString()
@@ -37,6 +38,7 @@ export class WebchatController {
     @Inject(ERP_ADAPTER) private readonly erp: ERPAdapter,
     private readonly pulse: PulseIspClient,
     private readonly mirror: PulseIspMirrorService,
+    private readonly aiResolver: AiProviderResolverService,
   ) {}
 
   /**
@@ -289,6 +291,101 @@ export class WebchatController {
       }
 
       return { hasIncident: false };
+    });
+  }
+
+  /**
+   * Upload e processamento OCR multimodal de comprovante de pagamento via WebChat.
+   */
+  @Public()
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
+  @Post(':tenantId/upload-receipt')
+  async uploadReceipt(
+    @Param('tenantId') tenantId: string,
+    @Body() body: { channelUserId: string; fileBase64: string; mimeType?: string; filename?: string },
+  ) {
+    await this.requireTenant(tenantId);
+    if (!body?.channelUserId || !body?.fileBase64) {
+      throw new BadRequestException('channelUserId e fileBase64 são obrigatórios.');
+    }
+
+    return runWithTenant(tenantId, async () => {
+      const conv = await this.conversation.findOrCreateConversation('WEBCHAT', body.channelUserId);
+      const ai = await this.aiResolver.resolve(tenantId);
+
+      let receiptAnalysis: any = null;
+      let textContent = '[Comprovante de pagamento anexado pelo cliente]';
+
+      if (typeof ai.analyzeReceipt === 'function') {
+        try {
+          receiptAnalysis = await ai.analyzeReceipt(body.fileBase64, body.mimeType || 'image/jpeg');
+          const amountStr = receiptAnalysis.amount ? `R$ ${receiptAnalysis.amount.toFixed(2)}` : 'valor não identificado';
+          const dateStr = receiptAnalysis.date || 'data atual';
+          const authStr = receiptAnalysis.authCode ? ` (Aut: ${receiptAnalysis.authCode})` : '';
+          textContent = `[Comprovante enviado pelo cliente - ${amountStr}, Data: ${dateStr}${authStr}]. Já efetuei o pagamento, segue comprovante para validação e desbloqueio da minha conexão.`;
+        } catch (err) {
+          textContent = '[Comprovante de pagamento anexado pelo cliente] Acabei de enviar o comprovante de pagamento.';
+        }
+      }
+
+      const decision = await this.orchestrator.handleMessage(conv.id, textContent);
+      const [messages, refreshed] = await Promise.all([
+        this.db.client.message.findMany({ where: { conversationId: conv.id }, orderBy: { createdAt: 'asc' } }),
+        this.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }),
+      ]);
+
+      return {
+        conversationId: conv.id,
+        receiptAnalysis,
+        decision,
+        messages,
+        status: refreshed.status,
+      };
+    });
+  }
+
+  /**
+   * Processamento e transcrição de áudio/voz via WebChat.
+   */
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post(':tenantId/voice')
+  async sendVoiceNote(
+    @Param('tenantId') tenantId: string,
+    @Body() body: { channelUserId: string; audioBase64: string; mimeType?: string },
+  ) {
+    await this.requireTenant(tenantId);
+    if (!body?.channelUserId || !body?.audioBase64) {
+      throw new BadRequestException('channelUserId e audioBase64 são obrigatórios.');
+    }
+
+    return runWithTenant(tenantId, async () => {
+      const conv = await this.conversation.findOrCreateConversation('WEBCHAT', body.channelUserId);
+      const ai = await this.aiResolver.resolve(tenantId);
+
+      let transcription = '';
+      if (typeof ai.transcribeAudio === 'function') {
+        try {
+          transcription = await ai.transcribeAudio(body.audioBase64, body.mimeType || 'audio/webm');
+        } catch (err) {
+          transcription = 'Gostaria de verificar o status da minha conexão.';
+        }
+      }
+
+      const messageText = `[Áudio enviado pelo cliente]: "${transcription || 'Olá, preciso de suporte.'}"`;
+      const decision = await this.orchestrator.handleMessage(conv.id, messageText);
+      const [messages, refreshed] = await Promise.all([
+        this.db.client.message.findMany({ where: { conversationId: conv.id }, orderBy: { createdAt: 'asc' } }),
+        this.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }),
+      ]);
+
+      return {
+        conversationId: conv.id,
+        transcription,
+        decision,
+        messages,
+        status: refreshed.status,
+      };
     });
   }
 
