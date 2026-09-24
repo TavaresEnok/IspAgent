@@ -70,8 +70,21 @@ export class MockAIProvider implements AIProvider {
     const network = input.followUp ? this.networkExplanation(input.facts) : this.networkReply(input.facts);
     if (network) return `${greeting}${network}`;
 
-    const factLines = input.facts.map((f) => `- ${f.label}: ${this.formatValue(f.value)}`).join('\n');
+    const factLines = input.facts.map((f) => `- ${this.formatFactLine(f)}`).join('\n');
     return `${greeting}aqui está o que encontrei:\n${factLines}`;
+  }
+
+  /** Labels com sufixo `(centavos)`/`(Mbps)` viram texto em R$/Mbps; o resto usa o valor cru. */
+  private formatFactLine(fact: ComposeReplyInput['facts'][number]): string {
+    const centavos = /^(.*) \(centavos\)$/.exec(fact.label);
+    if (centavos && typeof fact.value === 'number') {
+      return `${centavos[1]}: R$ ${(fact.value / 100).toFixed(2).replace('.', ',')}`;
+    }
+    const mbps = /^(.*) \(Mbps\)$/.exec(fact.label);
+    if (mbps && typeof fact.value === 'number') {
+      return `${mbps[1]}: ${fact.value} Mbps`;
+    }
+    return `${fact.label}: ${this.formatValue(fact.value)}`;
   }
 
   /** Cliente pediu explicação ("que sinal?", "como assim?") logo depois do diagnóstico. */

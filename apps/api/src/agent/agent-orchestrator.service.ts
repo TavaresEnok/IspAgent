@@ -70,6 +70,10 @@ const CONTRACT_UNRESOLVED_MESSAGE =
 const AFFIRMATIVE = /^\s*(sim|s|pode|pode sim|pode abrir|quero|claro|ok|okay|beleza|blz|por favor|abre|abra|isso|isso mesmo|manda|bora)(?!\p{L})/iu;
 const NEGATIVE = /^\s*(n[ãa]o|nao|n|agora n[ãa]o|obrigad[oa]|valeu|deixa|tudo bem)(?!\p{L})/iu;
 const FOLLOW_UP_WINDOW_MS = 30 * 60_000;
+// Continuação curta ("que sinal?", "e agora?") vs. mensagem nova no meio da janela (reclamação, assunto
+// diferente, tentativa de injeção): só a primeira reaproveita a última intenção de rede — senão qualquer
+// frase longa vira "explicando melhor" de novo e de novo (o cliente sente o bot preso em loop).
+const FOLLOW_UP_MAX_LENGTH = 40;
 
 const DECLINED_MESSAGE =
   'Tudo bem! Se o problema continuar ou você quiser que eu abra um chamado depois, é só me chamar por aqui.';
@@ -238,7 +242,12 @@ export class AgentOrchestratorService {
         classification = { intent: 'CHAMADO', confidence: 'MEDIUM' };
       } else if (offeredTicket && NEGATIVE.test(customerMessage)) {
         declined = true;
-      } else if (lastNetworkRun && !AFFIRMATIVE.test(customerMessage) && !NEGATIVE.test(customerMessage)) {
+      } else if (
+        lastNetworkRun &&
+        customerMessage.trim().length <= FOLLOW_UP_MAX_LENGTH &&
+        !AFFIRMATIVE.test(customerMessage) &&
+        !NEGATIVE.test(customerMessage)
+      ) {
         classification = { intent: lastNetworkRun.intent as Intent, confidence: 'MEDIUM' };
         followUp = true;
       }

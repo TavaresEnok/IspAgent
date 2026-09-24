@@ -67,6 +67,9 @@ services:
       - '${ISPAGENT_BIND_ADDR:-127.0.0.1}:${ISPAGENT_API_PORT:-3001}:3001'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    networks:
+      - default
+      - pulseisp
     depends_on:
       ispagent-db:
         condition: service_healthy
@@ -95,6 +98,9 @@ services:
       ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
       ISPAGENT_REDIS_URL: redis://:${ISPAGENT_REDIS_PASSWORD:-ispagent_dev_redis}@ispagent-redis:6379
       ISPAGENT_WORKER_HEALTH_PORT: '3002'
+    networks:
+      - default
+      - pulseisp
     depends_on:
       ispagent-db:
         condition: service_healthy
@@ -141,3 +147,11 @@ services:
 volumes:
   ispagent-db-data:
   ispagent-redis-data:
+
+networks:
+  default: {}
+  # Rede interna do PulseISP: permite que ispagent-api e ispagent-worker alcancem
+  # pulseisp-api:4000 diretamente por nome, sem expor nenhuma porta adicional.
+  pulseisp:
+    external: true
+    name: pulseisp_default

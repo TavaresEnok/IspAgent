@@ -107,14 +107,24 @@ export function createPlanViewTool(erp: ERPAdapter): ToolDefinition<{ customerId
     capability: 'view_plan',
     mode: erp.mode,
     execute: async (input) => {
-      const contracts = await erp.getContracts(input.customerId);
+      const [contracts, plans] = await Promise.all([erp.getContracts(input.customerId), erp.getPlans()]);
       const active = contracts.filter((c) => c.status === 'ACTIVE');
-      const facts = active.map((c) => ({
-        path: `data.contracts[${c.id}].planName`,
-        label: `Seu plano`,
-        value: c.planName,
-      }));
-      return { status: 'OK', data: { contracts: active }, facts };
+      const planById = new Map(plans.map((p) => [p.id, p]));
+
+      const facts: Fact[] = active.flatMap((c) => {
+        const contractFacts: Fact[] = [{ path: `data.contracts[${c.id}].planName`, label: 'Seu plano', value: c.planName }];
+        const plan = planById.get(c.planId);
+        if (plan) {
+          contractFacts.push(
+            { path: `data.plans[${plan.id}].priceCents`, label: 'Valor mensal do plano (centavos)', value: plan.priceCents },
+            { path: `data.plans[${plan.id}].downloadMbps`, label: 'Velocidade de download (Mbps)', value: plan.downloadMbps },
+            { path: `data.plans[${plan.id}].uploadMbps`, label: 'Velocidade de upload (Mbps)', value: plan.uploadMbps },
+          );
+        }
+        return contractFacts;
+      });
+
+      return { status: 'OK', data: { contracts: active, plans }, facts };
     },
   };
 }
