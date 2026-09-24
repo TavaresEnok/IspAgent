@@ -22,3 +22,6 @@ generated/
 test-results/
 playwright-report/
 scratch/
+
+# Dumps do banco (dados pessoais de clientes): nunca no git.
+backups/
