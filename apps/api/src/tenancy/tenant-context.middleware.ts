@@ -30,7 +30,10 @@ export class TenantContextMiddleware implements NestMiddleware {
 
   use(req: Request, _res: Response, next: NextFunction) {
     const header = req.headers.authorization;
-    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
+    // EventSource (SSE) não envia headers: só o stream do painel aceita o token pela query string.
+    const queryToken =
+      req.path === '/events/stream' && typeof req.query.access_token === 'string' ? req.query.access_token : null;
+    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : queryToken;
 
     if (!token) {
       next();

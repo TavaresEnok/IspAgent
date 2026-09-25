@@ -16,6 +16,9 @@ COPY packages/shared packages/shared
 COPY apps/web apps/web
 RUN pnpm --filter @ispagent/shared build
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* é embutido no bundle no build: a URL da API tem que chegar aqui, não em runtime.
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN pnpm --filter @ispagent/web build
 
 FROM base AS runtime

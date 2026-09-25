@@ -69,24 +69,40 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
       .then((q) => setPendingHandoffs(q.length))
       .catch(() => {});
 
-    // Conexão SSE em tempo real
+    // Tempo real (SSE). O tenant vem do token; EventSource não envia header, então o token vai na query.
+    // Em erro (ex.: token expirado), reconecta lendo o token atual — o apiFetch das telas já o renova.
     let es: EventSource | null = null;
-    try {
-      es = new EventSource(`${API_URL}/events/stream?tenantId=tnt_vibe`);
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+    const connect = () => {
+      const token = getAccessToken();
+      if (!token || closed) return;
+      es = new EventSource(`${API_URL}/events/stream?access_token=${encodeURIComponent(token)}`);
       es.onmessage = (event) => {
+        let payload: { type?: string; payload?: unknown } | null = null;
         try {
-          const payload = JSON.parse(event.data);
-          if (payload?.type === 'NEW_HANDOFF') {
-            setPendingHandoffs((prev) => prev + 1);
-            playNotificationChime();
-            setRealtimeAlert('🔔 Novo cliente entrou na Fila de Atendente Humano!');
-            setTimeout(() => setRealtimeAlert(null), 5000);
-          }
-        } catch {}
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        window.dispatchEvent(new CustomEvent('ispagent:realtime', { detail: payload }));
+        if (payload?.type === 'NEW_HANDOFF') {
+          setPendingHandoffs((prev) => prev + 1);
+          playNotificationChime();
+          setRealtimeAlert('🔔 Novo cliente entrou na Fila de Atendente Humano!');
+          setTimeout(() => setRealtimeAlert(null), 5000);
+        }
       };
-    } catch {}
+      es.onerror = () => {
+        es?.close();
+        if (!closed) retry = setTimeout(() => apiFetch('/auth/me').catch(() => null).finally(connect), 5000);
+      };
+    };
+    connect();
 
     return () => {
+      closed = true;
+      if (retry) clearTimeout(retry);
       es?.close();
     };
   }, [router]);

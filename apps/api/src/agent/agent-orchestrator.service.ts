@@ -25,6 +25,10 @@ const ACCOUNT_INTENTS: Intent[] = [
 
 const NETWORK_INTENTS: Intent[] = ['SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'SUPORTE_INTERNET'];
 
+const MAX_IDENTIFICATION_ASKS = 2;
+const IDENTITY_HANDOFF_MESSAGE =
+  'Não consegui localizar o seu cadastro por aqui. Vou te passar para um atendente, que confirma os seus dados e continua o atendimento com você.';
+
 function pulseIspEnabled(): boolean {
   return process.env.ISPAGENT_PULSEISP_ENABLED === 'true';
 }
@@ -556,36 +560,38 @@ export class AgentOrchestratorService {
 
     // Cliente precisa ser identificado (pedir CPF) se o assunto requer conta/conexão, OU se o bot já pediu CPF
     // e o cliente ainda não o forneceu (ou digitou algo não encontrado).
-    const needsCpf = !accountAvailable && (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
+    const wantsIdentification = !accountAvailable && (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
+    // Já pedimos o documento duas vezes sem conseguir identificar: para de insistir e passa para um atendente.
+    const cpfAsks = recentAgentReplies.filter((m) => /cpf|cnpj/i.test(m.content)).length;
+    const identityExhausted = wantsIdentification && cpfAsks >= MAX_IDENTIFICATION_ASKS;
+    const needsCpf = wantsIdentification && !identityExhausted;
 
     // Se a classificação falhou, não escolhemos ferramenta nenhuma a partir dela — `toolResults`/
     // `policyDecisions` ficam vazios e o turno vai direto pro caminho de HANDOFF abaixo.
-    if (declined) {
-      // nada a consultar — só encerra a oferta
+    if (declined || identityExhausted) {
+      // nada a consultar
     } else if (needsCpf) {
       // Cliente ainda não identificado: não faz busca de KB inútil nem gera handoff.
       // O bot vai solicitar ou reiterar a necessidade do CPF para poder dar prosseguimento.
     } else if (!aiFailed && accountAvailable && hasNetwork && hasAccount) {
-      // Cenário Multi-Intent: executa diagnóstico de rede, sinal óptico e consulta de fatura/conta
-      const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
-      const decisionPulse = await this.policy.evaluate(pulseTool.action);
-      policyDecisions.push(decisionPulse);
-      toolResults.push(
-        await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
-      );
-
-      // Leitura da potência óptica da fibra (dBm / PON) em tempo real
-      const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
-      policyDecisions.push(opticalDecision);
-      if (opticalDecision.allowed) {
+      // Cenário Multi-Intent: diagnóstico de rede (PulseISP ou base de conhecimento) + consulta de conta
+      if (pulseIspEnabled() || realPulseContract) {
+        const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
+        const decisionPulse = await this.policy.evaluate(pulseTool.action);
+        policyDecisions.push(decisionPulse);
         toolResults.push(
-          await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+          await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
         );
+      } else {
+        const kbTool = createKnowledgeSearchTool(this.knowledgeService);
+        const decisionKb = await this.policy.evaluate(kbTool.action);
+        policyDecisions.push(decisionKb);
+        toolResults.push(await this.executor.run(kbTool, { query: customerMessage }, { agentRunId: agentRun.id }));
       }
 
       // Desbloqueio em confiança se solicitado
       const isUnlockRequest = /(?:desbloque|libera|libera[cç][aã]o|confian[cç]a|j[aá] paguei|promessa|comprovante)/i.test(customerMessage);
-      if (isUnlockRequest) {
+      if (isUnlockRequest && !realPulseContract) {
         const unlockDecision = await this.policy.evaluate(this.erpTools.promiseToPayTool.action);
         policyDecisions.push(unlockDecision);
         if (unlockDecision.allowed) {
@@ -611,7 +617,7 @@ export class AgentOrchestratorService {
       }
     } else if (!aiFailed && accountAvailable && ACCOUNT_INTENTS.includes(classification.intent)) {
       const isUnlockRequest = /(?:desbloque|libera|libera[cç][aã]o|confian[cç]a|j[aá] paguei|promessa|comprovante)/i.test(customerMessage);
-      if (isUnlockRequest || classification.intent === 'BLOQUEIO') {
+      if ((isUnlockRequest || classification.intent === 'BLOQUEIO') && !realPulseContract) {
         const unlockDecision = await this.policy.evaluate(this.erpTools.promiseToPayTool.action);
         policyDecisions.push(unlockDecision);
         if (unlockDecision.allowed) {
@@ -646,23 +652,22 @@ export class AgentOrchestratorService {
         toolResults.push(
           await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
         );
-      }
-
-      // Leitura da potência óptica da fibra (dBm / PON) em tempo real
-      const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
-      policyDecisions.push(opticalDecision);
-      if (opticalDecision.allowed) {
-        toolResults.push(
-          await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
-        );
-      }
-
-      // Se não houver PulseISP ou faltar contexto, agrega busca na base de conhecimento
-      if (!pulseIspEnabled() && !realPulseContract) {
+      } else {
+        // Sem PulseISP: a base de conhecimento é a resposta principal; a leitura da ONU pelo ERP (quando o
+        // ERP a fornece) entra como complemento. Com PulseISP ela não roda: o diagnóstico já traz o sinal
+        // óptico, e duas fontes no mesmo turno chegaram a se contradizer.
         const kbTool = createKnowledgeSearchTool(this.knowledgeService);
         const decisionKb = await this.policy.evaluate(kbTool.action);
         policyDecisions.push(decisionKb);
         toolResults.push(await this.executor.run(kbTool, { query: customerMessage }, { agentRunId: agentRun.id }));
+
+        const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
+        policyDecisions.push(opticalDecision);
+        if (opticalDecision.allowed) {
+          toolResults.push(
+            await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+          );
+        }
       }
     } else if (!aiFailed && !declined) {
       const kbTool = createKnowledgeSearchTool(this.knowledgeService);
@@ -676,6 +681,8 @@ export class AgentOrchestratorService {
     let outcome: AgentDecision['outcome'];
     if (declined) {
       outcome = 'ANSWERED';
+    } else if (identityExhausted) {
+      outcome = 'HANDOFF';
     } else if (needsCpf) {
       outcome = 'ANSWERED';
     } else if (aiFailed) {
@@ -706,7 +713,13 @@ export class AgentOrchestratorService {
             actionsFailed: [],
             suggestedNextAction: 'Ler a mensagem original do cliente (a IA não conseguiu processá-la) e responder manualmente.',
           }
-        : this.buildHandoffSummary(classification.intent, identifiedCustomerId, identifiedContractId, customerMessage, toolResults);
+        : identityExhausted
+          ? {
+              ...this.buildHandoffSummary(classification.intent, identifiedCustomerId, identifiedContractId, customerMessage, toolResults),
+              reason: 'Não foi possível identificar o cliente: o documento foi pedido duas vezes sem localizar um cadastro único.',
+              suggestedNextAction: 'Confirmar a identidade do cliente (CPF/CNPJ do titular) e seguir com o pedido.',
+            }
+          : this.buildHandoffSummary(classification.intent, identifiedCustomerId, identifiedContractId, customerMessage, toolResults);
       await this.handoff.createHandoff(conversationId, summary.reason, summary);
     }
 
@@ -716,6 +729,8 @@ export class AgentOrchestratorService {
       replyText = AI_PROVIDER_FAILURE_MESSAGE;
     } else if (declined) {
       replyText = DECLINED_MESSAGE;
+    } else if (identityExhausted) {
+      replyText = IDENTITY_HANDOFF_MESSAGE;
     } else if (realPulseContract && toolResults.length === 0 && PULSE_HANDOFF_MESSAGE[classification.intent]) {
       replyText = PULSE_HANDOFF_MESSAGE[classification.intent] as string;
     } else if (classification.intent === 'OUTRO' && primaryResult?.status === 'NOT_FOUND' && ai.mode !== 'LIVE') {
@@ -974,13 +989,11 @@ export class AgentOrchestratorService {
       }
     }
 
-    // 4. Expressões comuns de identificação de nome/login
+    // 4. Login declarado. Nome NÃO identifica (P0.7): "sou o João" vincularia o primeiro João do cadastro
+    // e mostraria a fatura de outra pessoa.
     const introMatches = [
-      /meu (?:nome|login|usu[aá]rio) [eé]\s+([a-zA-ZÀ-ÿ0-9._\s]+)/i,
-      /sou (?:o|a)?\s+([a-zA-ZÀ-ÿ0-9._\s]+)/i,
-      /me chamo\s+([a-zA-ZÀ-ÿ0-9._\s]+)/i,
+      /meu (?:login|usu[aá]rio) [eé]\s+([a-zA-Z0-9._-]+)/i,
       /login[:\s]+([a-zA-Z0-9._-]+)/i,
-      /cpf[:\s]+([0-9.-]+)/i,
     ];
 
     for (const regex of introMatches) {
@@ -994,8 +1007,9 @@ export class AgentOrchestratorService {
       }
     }
 
-    // 5. Se a mensagem for curta e se parecer com um nome ou login (não descrição de problema ou conversa)
+    // 5. Mensagem curta que parece um login (tem letra e dígito, sem espaço) — nunca um nome solto.
     const trimmed = message.trim().replace(/[.,!?;]+$/, '');
+    const looksLikeLogin = /^(?=.*\d)(?=.*[a-zA-Z])[a-zA-Z0-9._-]+$/.test(trimmed);
     const isDescriptiveOrProblem =
       /(?:internet|sinal|ruim|lent[oa]|queda|caindo|caiu|fatura|boleto|bloqueio|plano|chamado|visita|t[eé]cnico|suporte|modem|roteador|fibra|conectar|conex[aã]o|ajuda|funciona|preciso|quero|meu|minha|n[aã]o|problema|ol[aá]|bom dia|boa tarde|boa noite|teste)/i;
 
@@ -1004,24 +1018,21 @@ export class AgentOrchestratorService {
       trimmed.length <= 40 &&
       !terms.includes(trimmed) &&
       !isDescriptiveOrProblem.test(trimmed) &&
-      /^[a-zA-ZÀ-ÿ0-9._\s-]+$/.test(trimmed)
+      looksLikeLogin
     ) {
       terms.push(trimmed);
     }
 
-    // Tentar localizar no banco local
+    // Banco local: só identificador exato e só se apontar para UM cliente (ambíguo nunca vincula).
     for (const term of terms) {
-      const localCust = await this.db.client.customer.findFirst({
+      const matches = await this.db.client.customer.findMany({
         where: {
-          OR: [
-            { document: term },
-            { name: { contains: term, mode: 'insensitive' } },
-            { externalId: term },
-            { phones: { has: term } },
-          ],
+          OR: [{ document: term }, { externalId: term }, { phones: { has: term } }],
         },
         include: { contracts: { where: { status: 'ACTIVE' } } },
+        take: 2,
       });
+      const localCust = matches.length === 1 ? matches[0] : null;
       if (localCust && localCust.contracts.length > 0) {
         return {
           identified: true,
@@ -1066,17 +1077,9 @@ export class AgentOrchestratorService {
       for (const term of terms) {
         try {
           const results = await this.pulseClient.searchCustomers(tenantId, term);
-          if (results && results.items && results.items.length > 0) {
-            let chosen = results.items[0];
-            if (results.items.length > 1) {
-              const exact = results.items.find(
-                (it) =>
-                  it.name.toLowerCase() === term.toLowerCase() ||
-                  it.externalId === term ||
-                  it.name.toLowerCase().includes(term.toLowerCase()),
-              );
-              if (exact) chosen = exact;
-            }
+          // Busca do PulseISP é textual: só aceita quando devolve exatamente um cliente.
+          if (results?.items?.length === 1) {
+            const chosen = results.items[0];
             const c360 = await this.pulseClient.customer360(tenantId, chosen.id);
             const mirrored = await this.mirror.upsertFromCustomer360(tenantId, c360);
             return {

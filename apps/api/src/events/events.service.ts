@@ -20,7 +20,7 @@ export class RealtimeEventsService {
 
   streamForTenant(tenantId: string): Observable<{ data: any }> {
     return this.subject.asObservable().pipe(
-      filter((e) => !e.tenantId || e.tenantId === tenantId),
+      filter((e) => e.tenantId === tenantId),
       map((e) => ({
         data: {
           type: e.type,
@@ -28,6 +28,14 @@ export class RealtimeEventsService {
           timestamp: new Date().toISOString(),
         },
       })),
+    );
+  }
+
+  /** Só as mensagens de uma conversa — é o que o Web Chat do cliente pode ver. */
+  streamForConversation(tenantId: string, conversationId: string): Observable<{ data: unknown }> {
+    return this.subject.asObservable().pipe(
+      filter((e) => e.tenantId === tenantId && e.type === 'NEW_MESSAGE' && e.data?.conversationId === conversationId),
+      map((e) => ({ data: { type: e.type, payload: e.data, timestamp: new Date().toISOString() } })),
     );
   }
 }

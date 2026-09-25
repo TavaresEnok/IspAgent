@@ -87,12 +87,51 @@ export default function WebChatPage() {
   const [surveySubmitted, setSurveySubmitted] = useState(false);
   const [submittingSurvey, setSubmittingSurvey] = useState(false);
 
+  async function copyToClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedText(text);
+      setTimeout(() => setCopiedText((cur) => (cur === text ? null : cur)), 2000);
+    } catch {
+      setError('Não foi possível copiar automaticamente. Selecione o código e copie manualmente.');
+    }
+  }
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
+
+  // Tempo real: mensagens novas desta conversa (ex.: resposta do atendente humano) chegam sem recarregar.
+  useEffect(() => {
+    if (!started || !phone) return;
+    const es = new EventSource(
+      `${API_URL}/public/webchat/${VIBE_TENANT}/conversation/${encodeURIComponent(phone)}/stream`,
+    );
+    es.onmessage = (event) => {
+      let msg: Message | undefined;
+      try {
+        msg = JSON.parse(event.data)?.payload?.message;
+      } catch {
+        return;
+      }
+      if (!msg?.id) return;
+      const incoming = msg;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === incoming.id)) return prev;
+        // A mensagem que o próprio cliente acabou de enviar volta pelo stream: substitui a temporária.
+        const tempIdx = prev.findIndex(
+          (m) => m.id.startsWith('temp_') && m.role === incoming.role && m.content === incoming.content,
+        );
+        if (tempIdx >= 0) return prev.map((m, i) => (i === tempIdx ? incoming : m));
+        return [...prev, incoming];
+      });
+      if (incoming.role === 'HUMAN') setConversationStatus('HUMAN_ACTIVE');
+    };
+    return () => es.close();
+  }, [started, phone]);
 
   // URL parameters handler (e.g. ?as=sgp:123 or ?cpf=123)
   useEffect(() => {

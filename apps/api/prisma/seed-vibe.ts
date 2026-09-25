@@ -7,6 +7,7 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'node:crypto';
+import { ISP_DEFAULT_ARTICLES } from './isp-default-articles';
 
 const prisma = new PrismaClient();
 
@@ -16,7 +17,7 @@ const ADMIN_EMAIL = 'admin@vibe.ispagent.local';
 async function main() {
   await prisma.tenant.upsert({
     where: { id: TENANT_ID },
-    update: { name: 'Vibe Telecom (PulseISP real)' },
+    update: {},
     create: { id: TENANT_ID, name: 'Vibe Telecom (PulseISP real)' },
   });
 
@@ -25,6 +26,16 @@ async function main() {
     update: {},
     create: { tenantId: TENANT_ID },
   });
+
+  // Artigos técnicos iniciais: só cria os que faltam, nunca sobrescreve edições feitas na tela.
+  for (const art of ISP_DEFAULT_ARTICLES) {
+    const id = `${TENANT_ID}_kb_${art.slug}`;
+    await prisma.knowledgeDocument.upsert({
+      where: { id },
+      update: {},
+      create: { id, tenantId: TENANT_ID, title: art.title, content: art.content, source: art.source },
+    });
+  }
 
   const existing = await prisma.user.findUnique({ where: { tenantId_email: { tenantId: TENANT_ID, email: ADMIN_EMAIL } } });
   const fromEnv = process.env.ISPAGENT_VIBE_ADMIN_PASSWORD;

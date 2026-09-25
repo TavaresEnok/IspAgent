@@ -1,6 +1,4 @@
-import * as path from 'node:path';
-import { config } from 'dotenv';
+import { testDatabaseUrl } from './test-db';
 
-// Testes rodam no host (fora do Docker): ISPAGENT_DATABASE_URL em .env já aponta para localhost e a
-// porta publicada pelo compose (ver .env.example), não para o hostname interno dos containers.
-config({ path: path.resolve(__dirname, '../../../.env') });
+// Testes rodam no host (fora do Docker), contra o banco de teste na porta publicada pelo compose.
+process.env.ISPAGENT_DATABASE_URL = testDatabaseUrl();

@@ -1,5 +1,5 @@
 import * as https from 'https';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 
 export interface SgpConfig {
   baseUrl: string;
@@ -29,13 +29,13 @@ export class SgpError extends Error {
 export class SgpClientService {
   private readonly logger = new Logger(SgpClientService.name);
 
-  constructor() {}
+  constructor(@Optional() private readonly transport: typeof https.request = https.request) {}
 
   getConfig(): SgpConfig {
     return {
-      baseUrl: (process.env.ISPAGENT_SGP_BASE_URL || 'https://vibetelecom.sgp.net.br').replace(/\/+$/, ''),
-      token: (process.env.ISPAGENT_SGP_TOKEN || 'c3c411c8-7917-4522-bfa3-2a6b388652d7').trim(),
-      app: (process.env.ISPAGENT_SGP_APP || 'sac-ajust').trim(),
+      baseUrl: (process.env.ISPAGENT_SGP_BASE_URL ?? '').replace(/\/+$/, ''),
+      token: (process.env.ISPAGENT_SGP_TOKEN ?? '').trim(),
+      app: (process.env.ISPAGENT_SGP_APP ?? '').trim(),
       timeoutMs: 15_000,
     };
   }
@@ -51,8 +51,8 @@ export class SgpClientService {
     params: Record<string, string | number | boolean | null | undefined> = {},
   ): Promise<T> {
     const cfg = this.getConfig();
-    if (!cfg.token || !cfg.app) {
-      throw new SgpError('SGP não configurado: token ou app ausentes em variáveis de ambiente.');
+    if (!cfg.baseUrl || !cfg.token || !cfg.app) {
+      throw new SgpError('SGP não configurado: ISPAGENT_SGP_BASE_URL, ISPAGENT_SGP_TOKEN e ISPAGENT_SGP_APP são obrigatórios.');
     }
 
     const cleanParams: Record<string, string> = {
@@ -89,7 +89,7 @@ export class SgpClientService {
         },
       };
 
-      const req = https.request(options, (res) => {
+      const req = this.transport(options, (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {

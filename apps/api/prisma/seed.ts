@@ -42,15 +42,18 @@ async function main() {
   const alpha = await upsertTenant('tnt_demo_alpha', 'Provedor Alpha');
   const beta = await upsertTenant('tnt_demo_beta', 'Provedor Beta');
 
+  // Os defaults do schema são conservadores (somente leitura) para tenants reais; o DEMO da seção 9
+  // exercita escrita (chamados), então fixa aqui o comportamento esperado em vez de herdar o default.
+  const DEMO_POLICY = { readOnlyMode: false, canCreateTicket: true };
   await prisma.tenantPolicyConfig.upsert({
     where: { tenantId: alpha.id },
-    update: {},
-    create: { tenantId: alpha.id },
+    update: DEMO_POLICY,
+    create: { tenantId: alpha.id, ...DEMO_POLICY },
   });
   await prisma.tenantPolicyConfig.upsert({
     where: { tenantId: beta.id },
-    update: {},
-    create: { tenantId: beta.id },
+    update: DEMO_POLICY,
+    create: { tenantId: beta.id, ...DEMO_POLICY },
   });
 
   await upsertUser({

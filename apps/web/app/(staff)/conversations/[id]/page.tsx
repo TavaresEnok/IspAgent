@@ -74,6 +74,17 @@ export default function ConversationDetailPage() {
 
   useEffect(load, [params.id]);
 
+  // Mensagem nova nesta conversa (cliente escreveu, IA respondeu): recarrega sem precisar de F5.
+  useEffect(() => {
+    const onRealtime = (e: Event) => {
+      const detail = (e as CustomEvent<{ type?: string; payload?: { conversationId?: string } }>).detail;
+      if (detail?.type === 'NEW_MESSAGE' && detail.payload?.conversationId === params.id) load();
+    };
+    window.addEventListener('ispagent:realtime', onRealtime);
+    return () => window.removeEventListener('ispagent:realtime', onRealtime);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.id]);
+
   async function sendReply() {
     if (!reply.trim() || sending) return;
     setSending(true);

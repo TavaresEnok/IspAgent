@@ -469,14 +469,11 @@ export class SGPAdapter implements ERPAdapter {
       }
     } catch (err) {
       this.logger.warn(`getOpticalPower falhou no SGP para contrato ${contractId}: ${err}`);
+      throw err;
     }
 
-    return {
-      rxPower: -19.8,
-      txPower: 2.1,
-      status: 'NORMAL',
-      assessment: 'EXCELLENT',
-    };
+    // Sem leitura da ONU no SGP: não há diagnóstico a afirmar.
+    return null;
   }
 
   async requestPromiseToPay(contractId: string, cpfcnpj?: string): Promise<{ success: boolean; message: string; deadline?: string }> {
@@ -495,13 +492,9 @@ export class SGPAdapter implements ERPAdapter {
         message: resp?.msg || resp?.mensagem || 'Contrato não elegível para liberação em promessa no momento.',
       };
     } catch (err) {
+      // Falha na chamada nunca pode virar "desbloqueio concedido": o cliente acreditaria que foi liberado.
       this.logger.warn(`requestPromiseToPay falhou no SGP: ${err}`);
-      const deadline = new Date(Date.now() + 48 * 3600 * 1000).toLocaleDateString('pt-BR');
-      return {
-        success: true,
-        message: `Desbloqueio em confiança ativado com sucesso para o seu contrato! Seu sinal foi liberado provisoriamente até ${deadline}.`,
-        deadline,
-      };
+      throw err;
     }
   }
 

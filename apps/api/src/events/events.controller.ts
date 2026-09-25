@@ -1,20 +1,15 @@
-import { Controller, Get, Query, Sse } from '@nestjs/common';
+import { Controller, Req, Sse } from '@nestjs/common';
+import { Request } from 'express';
 import { Observable } from 'rxjs';
 import { RealtimeEventsService } from './events.service';
-import { Public } from '../common/decorators/public.decorator';
 
 @Controller('events')
 export class RealtimeEventsController {
   constructor(private readonly events: RealtimeEventsService) {}
 
-  /**
-   * Endpoint de Server-Sent Events (SSE) para atualização em tempo real do painel de atendimento humano.
-   * Transmite novos transbordos (handoffs), mensagens e atualizações de status.
-   */
-  @Public()
+  /** Stream do painel (fila humana, mensagens novas). Tenant vem do login, token via ?access_token=. */
   @Sse('stream')
-  streamEvents(@Query('tenantId') queryTenantId?: string): Observable<any> {
-    const tenantId = queryTenantId || process.env.DEFAULT_TENANT_ID || 'tnt_vibe';
-    return this.events.streamForTenant(tenantId);
+  streamEvents(@Req() req: Request): Observable<{ data: unknown }> {
+    return this.events.streamForTenant(req.user!.tenantId);
   }
 }

@@ -14,6 +14,7 @@ import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.servic
 import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
 import { fixedAiResolver } from './helpers/ai-resolver';
+import { RealtimeEventsService } from '../src/events/events.service';
 
 /**
  * P0.5 — handoff gera resumo, entra na fila, atendente assume e a IA para de responder; teste de que
@@ -29,7 +30,7 @@ describe('Handoff', () => {
     prisma = new PrismaService();
     await prisma.$connect();
     db = new TenantPrismaService(prisma);
-    handoff = new HandoffService(db);
+    handoff = new HandoffService(db, new RealtimeEventsService());
 
     const policy = new PolicyEngineService(db);
     const executor = new ToolExecutorService(db, policy);
@@ -56,12 +57,15 @@ describe('Handoff', () => {
     return orchestrator.handleMessage(conversationId, message);
   }
 
-  it('P0.5 — identidade ambígua vira HANDOFF real: fila recebe resumo estruturado', async () => {
+  it('P0.5 — identidade ambígua não confirmada vira HANDOFF real: fila recebe resumo estruturado', async () => {
     const { conversationId, decision } = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
       });
-      const decision = await ask(conv.id, 'quero ver minha fatura, por favor');
+      // Telefone ambíguo: o agente pede o documento duas vezes; sem identificação, transfere.
+      await ask(conv.id, 'quero ver minha fatura, por favor');
+      await ask(conv.id, 'é a fatura deste mês');
+      const decision = await ask(conv.id, 'não tenho o documento aqui, só quero a fatura');
       return { conversationId: conv.id, decision };
     });
 
@@ -79,6 +83,7 @@ describe('Handoff', () => {
     };
     expect(summary.customerId).toBeNull();
     expect(summary.reportedProblem).toContain('fatura');
+    expect(summary.reason).toMatch(/identificar/);
     expect(summary.reason).toBeTruthy();
     expect(summary.suggestedNextAction).toBeTruthy();
 

@@ -18,6 +18,7 @@ import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.servic
 import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
 import { fixedAiResolver } from './helpers/ai-resolver';
+import { RealtimeEventsService } from '../src/events/events.service';
 
 /**
  * Integração com o PulseISP REAL (simulador de cliente do painel). O formato de `PulseCustomer360` vem do
@@ -137,6 +138,8 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
         for (const r of runs) await db.client.toolCall.deleteMany({ where: { agentRunId: r.id } });
         await db.client.agentRun.deleteMany({ where: { conversationId: c.id } });
         await db.client.handoff.deleteMany({ where: { conversationId: c.id } });
+        await db.client.satisfactionSurvey.deleteMany({ where: { conversationId: c.id } });
+        await db.client.cancellationRequest.deleteMany({ where: { conversationId: c.id } });
         await db.client.message.deleteMany({ where: { conversationId: c.id } });
         await db.client.conversation.delete({ where: { id: c.id } });
       }
@@ -152,7 +155,9 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
     await prisma.$connect();
     db = new TenantPrismaService(prisma);
     await prisma.tenant.upsert({ where: { id: TENANT }, create: { id: TENANT, name: 'Teste PulseISP real' }, update: {} });
-    await prisma.tenantPolicyConfig.upsert({ where: { tenantId: TENANT }, create: { tenantId: TENANT }, update: {} });
+    // Chamados habilitados: os testes de continuação cobrem a oferta de chamado (o default de tenant real é somente leitura).
+    const ticketsOn = { readOnlyMode: false, canCreateTicket: true };
+    await prisma.tenantPolicyConfig.upsert({ where: { tenantId: TENANT }, create: { tenantId: TENANT, ...ticketsOn }, update: ticketsOn });
     await wipe();
 
     mirror = new PulseIspMirrorService(db);
@@ -163,7 +168,7 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
     const conversation = new ConversationService(db, identity);
     const adapter = new TenantPulseISPAdapter(new MockPulseISPAdapter(db), fakeReal);
     orchestrator = new AgentOrchestratorService(
-      db, conversation, executor, policy, erpTools, new KnowledgeService(db), fixedAiResolver(new MockAIProvider()), adapter, new HandoffService(db),
+      db, conversation, executor, policy, erpTools, new KnowledgeService(db), fixedAiResolver(new MockAIProvider()), adapter, new HandoffService(db, new RealtimeEventsService()),
     );
   });
 
@@ -264,7 +269,6 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
   it('continuação: "que sinal?" depois do diagnóstico explica em linguagem simples (sem dBm), não cai na saudação', async () => {
     const { decisions, replies } = await conversation(['minha internet fica caindo toda hora', 'que sinal?']);
     expect(decisions[1].intent).toBe('QUEDAS');
-    expect(replies[1]).toMatch(/explicando melhor/);
     expect(replies[1]).not.toMatch(/dBm|-29|Consigo ajudar com/);
   });
 

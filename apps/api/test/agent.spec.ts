@@ -14,6 +14,7 @@ import { IdentityResolutionService } from '../src/identity/identity-resolution.s
 import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.service';
 import { runWithTenant } from '../src/common/tenant-context';
 import { fixedAiResolver } from './helpers/ai-resolver';
+import { RealtimeEventsService } from '../src/events/events.service';
 
 /**
  * Agent Orchestrator ponta a ponta (seção 3.3): mensagem → identidade → intenção → ferramenta permitida
@@ -40,7 +41,7 @@ describe('AgentOrchestratorService', () => {
     const conversation = new ConversationService(db, identity);
     const ai = new MockAIProvider();
     const pulseisp = new MockPulseISPAdapter(db);
-    const handoff = new HandoffService(db);
+    const handoff = new HandoffService(db, new RealtimeEventsService());
 
     orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, fixedAiResolver(ai), pulseisp, handoff);
   });
@@ -85,25 +86,47 @@ describe('AgentOrchestratorService', () => {
     expect(messages[1].content.length).toBeGreaterThan(0);
   });
 
-  it('telefone ambíguo (cus_demo_g/g2) nunca chama BillingTool e vira HANDOFF (P0.7)', async () => {
-    const decision = await runWithTenant('tnt_demo_alpha', async () => {
+  it('telefone ambíguo (cus_demo_g/g2) nunca chama BillingTool: pede o documento e, sem identificação, vira HANDOFF (P0.7)', async () => {
+    const { conversationId, turns } = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
       });
-      return ask(conv.id, 'quero saber da minha fatura');
+      const turns = [];
+      for (const msg of ['quero saber da minha fatura', 'é sobre a fatura mesmo', 'não lembro o documento agora']) {
+        turns.push(await ask(conv.id, msg));
+      }
+      return { conversationId: conv.id, turns };
     });
 
-    expect(decision.identity).toBeNull();
-    expect(decision.outcome).toBe('HANDOFF');
-    expect(decision.toolCalls).toHaveLength(1);
+    // Enquanto pede o documento: responde, sem identidade e sem nenhuma ferramenta de conta.
+    expect(turns[0].identity).toBeNull();
+    expect(turns[0].outcome).toBe('ANSWERED');
+    expect(turns[0].toolCalls).toHaveLength(0);
+    expect(turns[1].outcome).toBe('ANSWERED');
+    // Documento pedido duas vezes sem identificar: para de insistir e passa para humano.
+    expect(turns[2].identity).toBeNull();
+    expect(turns[2].outcome).toBe('HANDOFF');
 
-    const call = await runWithTenant('tnt_demo_alpha', () =>
-      db.client.toolCall.findUnique({ where: { id: decision.toolCalls[0] } }),
+    const calls = await runWithTenant('tnt_demo_alpha', () =>
+      db.client.toolCall.findMany({ where: { agentRun: { conversationId } } }),
     );
-    expect(call?.tool).not.toBe('BillingTool'); // sem conta confirmada, nenhuma ferramenta de conta roda
+    expect(calls.map((c) => c.tool)).not.toContain('BillingTool');
+    const conv = await runWithTenant('tnt_demo_alpha', () => db.client.conversation.findUniqueOrThrow({ where: { id: conversationId } }));
+    expect(conv.customerId).toBeNull();
   });
 
-  it('telefone não cadastrado usa KnowledgeTool para dúvida técnica, sem tentar identidade', async () => {
+  it('nome solto na mensagem nunca identifica o cliente (P0.7): "sou o Bruno" não vincula ninguém', async () => {
+    const decision = await runWithTenant('tnt_demo_alpha', async () => {
+      const conv = await db.client.conversation.create({
+        data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: freshPhone(), status: 'AI_ACTIVE' },
+      });
+      return ask(conv.id, 'sou o Bruno, quero minha fatura');
+    });
+    expect(decision.identity).toBeNull();
+    expect(decision.toolCalls).toHaveLength(0);
+  });
+
+  it('telefone não cadastrado com problema de rede pede o documento antes de diagnosticar, sem inventar identidade', async () => {
     const decision = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: freshPhone(), status: 'AI_ACTIVE' },
@@ -113,10 +136,8 @@ describe('AgentOrchestratorService', () => {
 
     expect(decision.identity).toBeNull();
     expect(decision.intent).toBe('INTERNET_LENTA');
-    const call = await runWithTenant('tnt_demo_alpha', () =>
-      db.client.toolCall.findUnique({ where: { id: decision.toolCalls[0] } }),
-    );
-    expect(call?.tool).toBe('KnowledgeTool');
+    expect(decision.outcome).toBe('ANSWERED');
+    expect(decision.toolCalls).toHaveLength(0);
   });
 
   it('consulta de chamado existente (cus_demo_f) executa SupportTool e responde', async () => {

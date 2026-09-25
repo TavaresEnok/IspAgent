@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { Intent } from '@ispagent/shared';
-import { AIProvider, ComposeReplyInput, IntentClassification, ReceiptAnalysisResult } from './ai-provider.interface';
+import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
 
 export const KEYWORD_RULES: Array<{ intent: Intent; keywords: string[] }> = [
   { intent: 'SEM_CONEXAO', keywords: ['sem internet', 'sem conexão', 'sem conexao', 'caiu a internet', 'não conecta', 'nao conecta', 'sem sinal', 'caiu a rede', 'não está funcionando'] },
   { intent: 'INTERNET_LENTA', keywords: ['lenta', 'lentidão', 'lentidao', 'devagar', 'travando', 'ruim', 'internet ruim', 'sinal ruim', 'internet pessima', 'conexao ruim', 'velocidade baixa', 'muito lento', 'muito lenta'] },
-  { intent: 'QUEDAS', keywords: ['cai toda hora', 'fica caindo', 'oscilando', 'quedas', 'reconectando', 'instável', 'instavel'] },
+  { intent: 'QUEDAS', keywords: ['caindo', 'cai toda hora', 'fica caindo', 'desconectando', 'oscilando', 'quedas', 'reconectando', 'instável', 'instavel'] },
   { intent: 'SEGUNDA_VIA', keywords: ['segunda via', '2 via', '2ª via', 'boleto', 'pdf', 'baixar boleto', 'baixar fatura', 'copia do boleto', 'link do boleto', 'quero o pdf', 'link pdf', 'gerar pdf', 'sem ser o link', 'pdf do boleto', 'outras solicitações', 'outras solicitacoes', 'minhas solicitações', 'minhas solicitacoes'] },
   { intent: 'PAGAMENTO', keywords: ['paguei', 'pagamento', 'comprovante', 'pix', 'chave pix', 'codigo pix', 'código pix', 'pagar', 'copia e cola', 'gere o código pix', 'gerar pix', 'eu pedi o pix', 'pedi o pix', 'qrcode', 'qr code', 'qrcod', 'cade o pix', 'cadê o pix'] },
   { intent: 'BLOQUEIO', keywords: ['bloqueado', 'bloqueio', 'desbloquear', 'corte'] },
@@ -16,7 +16,7 @@ export const KEYWORD_RULES: Array<{ intent: Intent; keywords: string[] }> = [
   { intent: 'STATUS_CHAMADO', keywords: ['status do chamado', 'andamento do chamado', 'meu chamado', 'ordem de serviço', 'ordem de servico', 'o.s'] },
   { intent: 'CHAMADO', keywords: ['abrir chamado', 'abrir um chamado', 'abertura de chamado', 'visita técnica', 'visita tecnica'] },
   { intent: 'CANCELAMENTO', keywords: ['cancelar', 'cancelamento'] },
-  { intent: 'SUPORTE_INTERNET', keywords: ['qual meu sinal', 'meu sinal', 'testar sinal', 'qual o sinal', 'wifi', 'wi-fi'] },
+  { intent: 'SUPORTE_INTERNET', keywords: ['qual meu sinal', 'meu sinal', 'testar sinal', 'qual o sinal', 'wifi', 'wi-fi', 'internet', 'conexão', 'conexao'] },
 ];
 
 function formatCustomerFirstName(fullName: string | null | undefined): string {
@@ -50,6 +50,11 @@ export class MockAIProvider implements AIProvider {
         }
       }
     }
+    // SUPORTE_INTERNET é o fallback genérico ("internet", "conexão"): não conta como segundo assunto.
+    const specific = matched.filter((i) => i !== 'SUPORTE_INTERNET');
+    if (specific.length > 0) {
+      return { intents: specific, primary: specific[0], confidence: 'MEDIUM' };
+    }
     if (matched.length > 0) {
       return { intents: matched, primary: matched[0], confidence: 'MEDIUM' };
     }
@@ -62,6 +67,7 @@ export class MockAIProvider implements AIProvider {
     const msgLower = (input.customerMessage ?? '').toLowerCase();
     const alreadyRebooted = /(?:j[aá]\s*(?:reiniciei|desliguei|fiz|tirei|resetei|tudo)|mentirosa|essa porra|de novo)/i.test(msgLower);
 
+    const canTicket = Boolean(input.persona?.canCreateTicket);
     const company = input.persona?.companyName?.trim() || 'Vibe Telecom';
     const assistant = input.persona?.assistantName?.trim() || 'assistente virtual';
 
@@ -100,7 +106,7 @@ export class MockAIProvider implements AIProvider {
 
     // Cenário Multi-Intent: Cliente pediu suporte de rede E segunda via/PIX no mesmo turno
     if (opticalFact && (pdfFact || pixFact || amountFact)) {
-      let reply = `${greeting}verifiquei a sua conexão e a fibra óptica está recebendo sinal normal da nossa rede.\n\nE sobre a sua fatura, localizei o boleto`;
+      let reply = `${greeting}${this.networkReply(input.facts) ?? 'verifiquei a sua conexão.'}\n\nE sobre a sua fatura, localizei o boleto`;
       if (amountFact?.value) reply += ` no valor de **${amountFact.value}**`;
       if (dueFact?.value) reply += ` com vencimento em **${dueFact.value}**`;
       if (statusFact?.value) reply += ` (${statusFact.value})`;
@@ -141,11 +147,19 @@ export class MockAIProvider implements AIProvider {
 
     // Se o cliente já avisou que reiniciou ou está irritado com repetição
     if (alreadyRebooted) {
-      return `${greeting}compreendo perfeitamente e peço desculpas. Como você já reiniciou o roteador e o sinal do Wi-Fi está bom, isso indica que o problema não é com o seu equipamento interno. No momento a abertura de novos chamados está pausada para manutenção, mas se precisar emitir segunda via, gerar PIX ou consultar seu plano, estou à disposição!`;
+      const next = canTicket
+        ? 'Quer que eu abra um chamado técnico para verificarmos a sua linha?'
+        : 'Posso te passar para um atendente da equipe técnica, é só pedir.';
+      return `${greeting}compreendo perfeitamente e peço desculpas. Se você já reiniciou os equipamentos, não vou pedir isso de novo. ${next}`;
     }
 
     const network = input.followUp ? this.networkExplanation(input.facts) : this.networkReply(input.facts);
-    if (network) return `${greeting}${network}`;
+    if (network) {
+      const status = input.facts.find((f) => f.label === 'Status da conexão')?.value;
+      const hasIssue = !input.followUp && (status === 'DEGRADED' || status === 'CRITICAL' || status === 'OFFLINE');
+      const offer = hasIssue && canTicket ? ' Quer que eu abra um chamado técnico para verificarmos?' : '';
+      return `${greeting}${network}${offer}`;
+    }
 
     // Plano de internet
     const planFact = input.facts.find((f) => f.label.includes('plano') || f.label.includes('Plano'));
@@ -180,6 +194,8 @@ export class MockAIProvider implements AIProvider {
     switch (status) {
       case 'HEALTHY':
         return 'verifiquei a sua conexão e a fibra óptica está recebendo sinal normal da nossa rede. Se você notar lentidão no Wi-Fi, pode ser uma oscilação temporária de frequência.';
+      case 'CRITICAL':
+        return 'verifiquei a sua conexão e o sinal que chega até você está bem abaixo do ideal, o que explica as quedas.';
       case 'DEGRADED':
         return 'verifiquei a sua conexão e detectei uma oscilação no sinal óptico que chega até você.';
       case 'OFFLINE':
@@ -193,19 +209,5 @@ export class MockAIProvider implements AIProvider {
     if (typeof value === 'boolean') return value ? 'sim' : 'não';
     if (value === null) return 'não informado';
     return String(value);
-  }
-
-  async transcribeAudio(audioBase64: string, mimeType = 'audio/ogg'): Promise<string> {
-    return 'Olá, minha internet está com sinal fraco e gostaria de verificar minha conexão.';
-  }
-
-  async analyzeReceipt(fileBase64: string, mimeType = 'image/jpeg'): Promise<ReceiptAnalysisResult> {
-    return {
-      isValid: true,
-      amount: 99.9,
-      date: new Date().toLocaleDateString('pt-BR'),
-      recipient: 'Vibe Telecom',
-      notes: 'Comprovante bancário PIX validado com sucesso',
-    };
   }
 }

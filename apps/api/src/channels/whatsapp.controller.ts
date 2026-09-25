@@ -1,10 +1,16 @@
-import { Controller, Get, Post, Query, Body, Headers, HttpCode, HttpStatus, Logger, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, HttpCode, HttpStatus, Logger, BadRequestException } from '@nestjs/common';
 import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { AgentOrchestratorService } from '../agent/agent-orchestrator.service';
 import { ConversationService } from '../conversation/conversation.service';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
-import { runWithTenant } from '../common/tenant-context';
+import { currentTenantId, runWithTenant } from '../common/tenant-context';
 import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
+import { WhatsAppCloudClient } from './whatsapp-cloud.client';
+
+const UNREADABLE_AUDIO_MESSAGE = 'Não consegui entender o seu áudio. Pode escrever a sua mensagem, por favor?';
+const UNREADABLE_IMAGE_MESSAGE =
+  'Não consegui ler essa imagem como comprovante. Pode enviar uma foto mais nítida, ou escrever o valor e a data do pagamento?';
 
 @Controller('public/whatsapp')
 export class WhatsAppController {
@@ -15,12 +21,10 @@ export class WhatsAppController {
     private readonly conversation: ConversationService,
     private readonly db: TenantPrismaService,
     private readonly aiResolver: AiProviderResolverService,
+    private readonly whatsapp: WhatsAppCloudClient,
   ) {}
 
-  /**
-   * Endpoint de validação de Webhook do WhatsApp Cloud API (Meta).
-   * Valida hub.verify_token e retorna o hub.challenge em texto puro.
-   */
+  /** Validação do webhook pela Meta: devolve hub.challenge se o verify token bater. */
   @Public()
   @Get('webhook')
   verifyWebhook(
@@ -28,156 +32,119 @@ export class WhatsAppController {
     @Query('hub.verify_token') token?: string,
     @Query('hub.challenge') challenge?: string,
   ) {
-    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || 'ispagent_whatsapp_secret';
-    if (mode === 'subscribe' && token === expectedToken) {
+    const expectedToken = process.env.ISPAGENT_WHATSAPP_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN;
+    if (expectedToken && mode === 'subscribe' && token === expectedToken) {
       this.logger.log('WhatsApp Webhook validado com sucesso pela Meta.');
       return challenge;
     }
     throw new BadRequestException('Token de validação inválido');
   }
 
-  /**
-   * Recebe mensagens do WhatsApp (suporta texto, áudio transcrito por IA e comprovantes com OCR).
-   */
+  /** Mensagem recebida (formato WhatsApp Cloud API). A resposta é enviada pela API, não pelo corpo do webhook. */
   @Public()
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleIncomingMessage(@Body() body: any, @Query('tenantId') queryTenantId?: string) {
-    this.logger.log(`WhatsApp webhook recebido: ${JSON.stringify(body).slice(0, 300)}`);
+    const msg = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!msg?.from) return { status: 'ignored_or_status_ack' };
 
     const tenantId = queryTenantId || process.env.DEFAULT_TENANT_ID || 'tnt_vibe';
+    const fromNumber = String(msg.from);
     const ai = await this.aiResolver.resolve(tenantId);
 
-    let fromNumber = '';
+    // Texto que o agente vai processar, ou resposta fixa quando a mídia não pôde ser lida.
     let messageText = '';
-    let isAudio = false;
-    let isImage = false;
+    let unreadableReply: string | null = null;
+    let customerMarker = '';
 
-    // 1. Extração do remetente e tipo de mensagem (Meta Cloud API)
-    if (body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
-      const msg = body.entry[0].changes[0].value.messages[0];
-      fromNumber = msg.from;
-      if (msg.type === 'text') {
-        messageText = msg.text?.body || '';
-      } else if (msg.type === 'audio' || msg.type === 'voice') {
-        isAudio = true;
-        const audioBase64 = msg.audio?.data || msg.voice?.data || 'mock_audio_data';
-        if (typeof ai.transcribeAudio === 'function') {
-          messageText = await ai.transcribeAudio(audioBase64, msg.audio?.mime_type || 'audio/ogg');
-        } else {
-          messageText = 'Olá, estou com problemas na minha internet e gostaria de suporte.';
-        }
-        messageText = `[Áudio transcrito do cliente]: "${messageText}"`;
-      } else if (msg.type === 'image') {
-        isImage = true;
-        const imageBase64 = msg.image?.data || 'mock_image_data';
-        if (typeof ai.analyzeReceipt === 'function') {
-          const receipt = await ai.analyzeReceipt(imageBase64, msg.image?.mime_type || 'image/jpeg');
-          messageText = `[Comprovante enviado pelo cliente]: Valor R$ ${receipt.amount || '0.00'}, Data: ${receipt.date || 'hoje'}. ${receipt.notes || ''}`;
-        } else {
-          messageText = '[Comprovante de pagamento anexado pelo cliente]';
-        }
-      } else if (msg.type === 'interactive') {
-        messageText = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
-      }
-    } 
-    // 2. Formato Z-API / Evolution / Webhook genérico
-    else if (body?.phone || body?.sender || body?.from) {
-      fromNumber = String(body.phone || body.sender || body.from).replace(/\D/g, '');
-      if (body.audio || body.audioUrl || body.voice) {
-        isAudio = true;
-        const audioData = body.audio || body.voice || 'mock_audio';
-        if (typeof ai.transcribeAudio === 'function') {
-          messageText = await ai.transcribeAudio(audioData, 'audio/ogg');
-        } else {
-          messageText = 'Olá, gostaria de verificar a minha conexão.';
-        }
-        messageText = `[Áudio transcrito do cliente]: "${messageText}"`;
-      } else if (body.image || body.imageUrl) {
-        isImage = true;
-        const imgData = body.image || 'mock_image';
-        if (typeof ai.analyzeReceipt === 'function') {
-          const receipt = await ai.analyzeReceipt(imgData, 'image/jpeg');
-          messageText = `[Comprovante enviado pelo cliente]: Valor R$ ${receipt.amount || '0.00'}, Data: ${receipt.date || 'hoje'}. ${receipt.notes || ''}`;
-        } else {
-          messageText = '[Comprovante de pagamento anexado pelo cliente]';
-        }
+    if (msg.type === 'text') {
+      messageText = msg.text?.body || '';
+    } else if (msg.type === 'interactive') {
+      messageText = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
+    } else if (msg.type === 'audio' || msg.type === 'voice') {
+      customerMarker = '[Áudio enviado pelo cliente]';
+      const media = await this.whatsapp.downloadMedia(msg.audio?.id || msg.voice?.id);
+      const transcription =
+        media && ai.transcribeAudio ? await ai.transcribeAudio(media.base64, media.mimeType).catch(() => '') : '';
+      if (transcription.trim()) messageText = `[Áudio transcrito do cliente]: "${transcription.trim()}"`;
+      else unreadableReply = UNREADABLE_AUDIO_MESSAGE;
+    } else if (msg.type === 'image') {
+      customerMarker = '[Imagem enviada pelo cliente]';
+      const media = await this.whatsapp.downloadMedia(msg.image?.id);
+      const receipt = media && ai.analyzeReceipt ? await ai.analyzeReceipt(media.base64, media.mimeType).catch(() => null) : null;
+      if (receipt?.isValid) {
+        const amount = Number(receipt.amount);
+        const amountStr = Number.isFinite(amount) && amount > 0 ? `R$ ${amount.toFixed(2)}` : 'valor não identificado';
+        messageText = `[Comprovante enviado pelo cliente]: Valor ${amountStr}, Data: ${receipt.date || 'não identificada'}. Já efetuei o pagamento.`;
       } else {
-        messageText = body.text || body.message || body.body || '';
+        unreadableReply = UNREADABLE_IMAGE_MESSAGE;
       }
     }
 
-    if (!fromNumber || !messageText) {
-      return { status: 'ignored_or_status_ack' };
-    }
+    if (!messageText && !unreadableReply) return { status: 'ignored_or_status_ack' };
 
     return runWithTenant(tenantId, async () => {
       const conv = await this.conversation.findOrCreateConversation('WHATSAPP', fromNumber);
+
+      if (unreadableReply) {
+        await this.conversation.appendMessage(conv.id, 'CUSTOMER', customerMarker);
+        await this.conversation.appendMessage(conv.id, 'AGENT', unreadableReply);
+        const delivery = await this.whatsapp.sendText(fromNumber, unreadableReply);
+        return { status: 'processed', conversationId: conv.id, reply: unreadableReply, delivery };
+      }
+
+      const before = new Date();
       const decision = await this.orchestrator.handleMessage(conv.id, messageText);
+      // `null` = um atendente assumiu a conversa: a IA não responde nada.
+      if (!decision) return { status: 'processed', conversationId: conv.id, reply: null, delivery: null };
 
-      const lastAiMsg = await this.db.client.message.findFirst({
-        where: { conversationId: conv.id, role: 'AGENT' },
-        orderBy: { createdAt: 'desc' },
+      const replies = await this.db.client.message.findMany({
+        where: { conversationId: conv.id, role: { in: ['AGENT', 'SYSTEM'] }, createdAt: { gte: before } },
+        orderBy: { createdAt: 'asc' },
       });
+      const deliveries = [];
+      for (const r of replies) deliveries.push(await this.whatsapp.sendText(fromNumber, r.content));
 
-      this.logger.log(`Resposta gerada para WhatsApp (${fromNumber}): ${lastAiMsg?.content?.slice(0, 100)}...`);
-
-      return {
-        status: 'processed',
-        conversationId: conv.id,
-        isAudio,
-        isImage,
-        reply: lastAiMsg?.content || (decision ? `Decisão: ${decision.outcome}` : 'Mensagem recebida'),
-        decision,
-      };
+      return { status: 'processed', conversationId: conv.id, replies: replies.map((r) => r.content), deliveries, decision };
     });
   }
 
-  /**
-   * Disparo proativo de avisos de manutenção na PON / Região para clientes via WhatsApp.
-   */
-  @Public()
+  /** Aviso proativo (ex.: manutenção na PON) para clientes do tenant logado no WhatsApp. */
+  @Roles('SUPERVISOR', 'TENANT_ADMIN', 'SUPER_ADMIN')
   @Post('broadcast-maintenance')
   @HttpCode(HttpStatus.OK)
-  async broadcastMaintenance(
-    @Body() body: { tenantId?: string; ponId?: string; message: string; phones?: string[] },
-  ) {
-    const tenantId = body.tenantId || process.env.DEFAULT_TENANT_ID || 'tnt_vibe';
+  async broadcastMaintenance(@Body() body: { ponId?: string; message: string; phones?: string[] }) {
+    const tenantId = currentTenantId() as string;
     const alertMessage = body.message?.trim();
     if (!alertMessage) throw new BadRequestException('Mensagem de aviso obrigatória.');
 
-    return runWithTenant(tenantId, async () => {
-      let targetPhones = body.phones || [];
-      if (!targetPhones.length) {
-        // Se não especificou telefones, busca conversas ativas no canal WhatsApp
-        const recentConvs = await this.db.client.conversation.findMany({
-          where: { channel: 'WHATSAPP' },
-          take: 50,
-          select: { channelUserId: true },
-        });
-        targetPhones = recentConvs.map((c) => c.channelUserId);
-      }
+    let targetPhones = body.phones || [];
+    if (!targetPhones.length) {
+      const recentConvs = await this.db.client.conversation.findMany({
+        where: { channel: 'WHATSAPP' },
+        take: 50,
+        select: { channelUserId: true },
+      });
+      targetPhones = recentConvs.map((c) => c.channelUserId);
+    }
 
-      const results = [];
-      for (const phone of targetPhones) {
-        try {
-          const conv = await this.conversation.findOrCreateConversation('WHATSAPP', phone);
-          const formattedMsg = `📢 *AVISO DE MANUTENÇÃO PROATIVA - VIBE TELECOM*\n\n${alertMessage}`;
-          const msg = await this.conversation.appendMessage(conv.id, 'AGENT', formattedMsg);
-          results.push({ phone, status: 'sent', messageId: msg.id });
-        } catch (e: any) {
-          results.push({ phone, status: 'failed', error: e.message });
-        }
-      }
+    const results = [];
+    for (const phone of targetPhones) {
+      const conv = await this.conversation.findOrCreateConversation('WHATSAPP', phone);
+      const formattedMsg = `📢 *AVISO DE MANUTENÇÃO*\n\n${alertMessage}`;
+      const msg = await this.conversation.appendMessage(conv.id, 'AGENT', formattedMsg);
+      const delivery = await this.whatsapp.sendText(phone, formattedMsg);
+      results.push({ phone, messageId: msg.id, ...delivery });
+    }
 
-      this.logger.log(`Disparo proativo de manutenção enviado para ${results.length} destinatários.`);
-      return {
-        broadcast: true,
-        totalRecipients: results.length,
-        dispatchedAt: new Date().toISOString(),
-        results,
-      };
-    });
+    const delivered = results.filter((r) => r.delivered).length;
+    this.logger.log(`Aviso proativo (tenant ${tenantId}): ${delivered}/${results.length} entregues ao WhatsApp.`);
+    return {
+      broadcast: true,
+      totalRecipients: results.length,
+      delivered,
+      dispatchedAt: new Date().toISOString(),
+      results,
+    };
   }
 }
-

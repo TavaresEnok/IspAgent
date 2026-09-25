@@ -1,4 +1,6 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Query, Sse } from '@nestjs/common';
+import { EMPTY, Observable } from 'rxjs';
+import { RealtimeEventsService } from '../events/events.service';
 import { PulseIspClient, PulseIspError } from '../integrations/pulseisp/pulseisp-client.service';
 import { PulseIspMirrorService } from '../integrations/pulseisp/pulseisp-mirror.service';
 import { Throttle } from '@nestjs/throttler';
@@ -13,6 +15,11 @@ import { Public } from '../common/decorators/public.decorator';
 import { ERP_ADAPTER, ERPAdapter } from '../integrations/erp/erp-adapter.interface';
 import { Inject } from '@nestjs/common';
 import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
+import { ReceiptAnalysisResult } from '../integrations/ai/ai-provider.interface';
+
+const UNREADABLE_AUDIO_MESSAGE = 'Não consegui entender o seu áudio. Pode escrever a sua mensagem, por favor?';
+const UNREADABLE_RECEIPT_MESSAGE =
+  'Não consegui ler esse arquivo como comprovante. Pode enviar uma foto mais nítida, ou escrever o valor e a data do pagamento?';
 
 class WebchatMessageDto {
   @IsString()
@@ -39,6 +46,7 @@ export class WebchatController {
     private readonly pulse: PulseIspClient,
     private readonly mirror: PulseIspMirrorService,
     private readonly aiResolver: AiProviderResolverService,
+    private readonly events: RealtimeEventsService,
   ) {}
 
   /**
@@ -170,6 +178,25 @@ export class WebchatController {
     });
   }
 
+  // Mensagens novas da conversa em tempo real (ex.: resposta do atendente humano), sem polling.
+  @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Sse(':tenantId/conversation/:channelUserId/stream')
+  async streamConversation(
+    @Param('tenantId') tenantId: string,
+    @Param('channelUserId') channelUserId: string,
+  ): Promise<Observable<{ data: unknown }>> {
+    await this.requireTenant(tenantId);
+    const conv = await runWithTenant(tenantId, () =>
+      this.db.client.conversation.findFirst({
+        where: { channel: 'WEBCHAT', channelUserId },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      }),
+    );
+    return conv ? this.events.streamForConversation(tenantId, conv.id) : EMPTY;
+  }
+
   @Public()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get(':tenantId/conversation/:channelUserId')
@@ -213,6 +240,8 @@ export class WebchatController {
         }
         await this.db.client.agentRun.deleteMany({ where: { conversationId: conv.id } });
         await this.db.client.handoff.deleteMany({ where: { conversationId: conv.id } });
+        await this.db.client.satisfactionSurvey.deleteMany({ where: { conversationId: conv.id } });
+        await this.db.client.cancellationRequest.deleteMany({ where: { conversationId: conv.id } });
         await this.db.client.message.deleteMany({ where: { conversationId: conv.id } });
         await this.db.client.conversation.delete({ where: { id: conv.id } });
       }
@@ -313,20 +342,27 @@ export class WebchatController {
       const conv = await this.conversation.findOrCreateConversation('WEBCHAT', body.channelUserId);
       const ai = await this.aiResolver.resolve(tenantId);
 
-      let receiptAnalysis: any = null;
-      let textContent = '[Comprovante de pagamento anexado pelo cliente]';
-
+      let receiptAnalysis: ReceiptAnalysisResult | null = null;
       if (typeof ai.analyzeReceipt === 'function') {
         try {
           receiptAnalysis = await ai.analyzeReceipt(body.fileBase64, body.mimeType || 'image/jpeg');
-          const amountStr = receiptAnalysis.amount ? `R$ ${receiptAnalysis.amount.toFixed(2)}` : 'valor não identificado';
-          const dateStr = receiptAnalysis.date || 'data atual';
-          const authStr = receiptAnalysis.authCode ? ` (Aut: ${receiptAnalysis.authCode})` : '';
-          textContent = `[Comprovante enviado pelo cliente - ${amountStr}, Data: ${dateStr}${authStr}]. Já efetuei o pagamento, segue comprovante para validação e desbloqueio da minha conexão.`;
-        } catch (err) {
-          textContent = '[Comprovante de pagamento anexado pelo cliente] Acabei de enviar o comprovante de pagamento.';
+        } catch {
+          receiptAnalysis = null;
         }
       }
+
+      // Sem leitura confiável do comprovante, nada é repassado ao agente como se o cliente tivesse dito.
+      if (!receiptAnalysis?.isValid) {
+        await this.conversation.appendMessage(conv.id, 'CUSTOMER', '[Arquivo anexado pelo cliente]');
+        await this.conversation.appendMessage(conv.id, 'AGENT', UNREADABLE_RECEIPT_MESSAGE);
+        return this.snapshot(conv.id, { receiptAnalysis, decision: null });
+      }
+
+      const amount = Number(receiptAnalysis.amount);
+      const amountStr = Number.isFinite(amount) && amount > 0 ? `R$ ${amount.toFixed(2)}` : 'valor não identificado';
+      const dateStr = receiptAnalysis.date || 'data não identificada';
+      const authStr = receiptAnalysis.authCode ? ` (Aut: ${receiptAnalysis.authCode})` : '';
+      const textContent = `[Comprovante enviado pelo cliente - ${amountStr}, Data: ${dateStr}${authStr}]. Já efetuei o pagamento, segue comprovante para validação e desbloqueio da minha conexão.`;
 
       const decision = await this.orchestrator.handleMessage(conv.id, textContent);
       const [messages, refreshed] = await Promise.all([
@@ -366,13 +402,20 @@ export class WebchatController {
       let transcription = '';
       if (typeof ai.transcribeAudio === 'function') {
         try {
-          transcription = await ai.transcribeAudio(body.audioBase64, body.mimeType || 'audio/webm');
-        } catch (err) {
-          transcription = 'Gostaria de verificar o status da minha conexão.';
+          transcription = (await ai.transcribeAudio(body.audioBase64, body.mimeType || 'audio/webm')).trim();
+        } catch {
+          transcription = '';
         }
       }
 
-      const messageText = `[Áudio enviado pelo cliente]: "${transcription || 'Olá, preciso de suporte.'}"`;
+      // Sem transcrição, o agente não pode agir sobre algo que o cliente não disse.
+      if (!transcription) {
+        await this.conversation.appendMessage(conv.id, 'CUSTOMER', '[Áudio enviado pelo cliente]');
+        await this.conversation.appendMessage(conv.id, 'AGENT', UNREADABLE_AUDIO_MESSAGE);
+        return this.snapshot(conv.id, { transcription, decision: null });
+      }
+
+      const messageText = `[Áudio enviado pelo cliente]: "${transcription}"`;
       const decision = await this.orchestrator.handleMessage(conv.id, messageText);
       const [messages, refreshed] = await Promise.all([
         this.db.client.message.findMany({ where: { conversationId: conv.id }, orderBy: { createdAt: 'asc' } }),
@@ -387,6 +430,14 @@ export class WebchatController {
         status: refreshed.status,
       };
     });
+  }
+
+  private async snapshot<T extends object>(conversationId: string, extra: T) {
+    const [messages, refreshed] = await Promise.all([
+      this.db.client.message.findMany({ where: { conversationId }, orderBy: { createdAt: 'asc' } }),
+      this.db.client.conversation.findUniqueOrThrow({ where: { id: conversationId } }),
+    ]);
+    return { conversationId, ...extra, messages, status: refreshed.status };
   }
 
   private async requireTenant(tenantId: string) {

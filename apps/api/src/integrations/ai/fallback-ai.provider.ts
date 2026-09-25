@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { Confidence, Intent } from '@ispagent/shared';
 import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
 
 /**
@@ -64,5 +65,30 @@ export class FallbackAIProvider implements AIProvider {
       this.logger.warn(`${this.primary.name} indisponível na resposta — usando regras: ${String(err).slice(0, 120)}`);
       return this.backup.composeReply(input);
     }
+  }
+
+  async classifyIntents(message: string): Promise<{ intents: Intent[]; primary: Intent; confidence: Confidence }> {
+    const viaSingle = async (p: AIProvider) => {
+      const c = await p.classifyIntent(message);
+      return { intents: [c.intent], primary: c.intent, confidence: c.confidence };
+    };
+    const run = (p: AIProvider) => (p.classifyIntents ? p.classifyIntents(message) : viaSingle(p));
+    if (this.isCoolingDown()) return run(this.backup);
+    try {
+      return await run(this.primary);
+    } catch (err) {
+      this.triggerCooldown(err);
+      this.logger.warn(`${this.primary.name} indisponível na classificação — usando regras: ${String(err).slice(0, 120)}`);
+      return run(this.backup);
+    }
+  }
+
+  // Áudio e comprovante não têm reserva: as regras não leem mídia, e inventar o conteúdo seria pior que falhar.
+  get transcribeAudio(): AIProvider['transcribeAudio'] {
+    return this.primary.transcribeAudio?.bind(this.primary);
+  }
+
+  get analyzeReceipt(): AIProvider['analyzeReceipt'] {
+    return this.primary.analyzeReceipt?.bind(this.primary);
   }
 }

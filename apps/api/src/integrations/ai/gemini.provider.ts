@@ -229,7 +229,7 @@ export class GeminiProvider implements AIProvider {
       return result.response.text().trim();
     } catch (err) {
       this.logger.warn(`transcribeAudio falhou via Gemini: ${err}`);
-      return 'Olá, estou com problemas na minha internet e gostaria de suporte.';
+      throw err;
     }
   }
 
@@ -265,18 +265,11 @@ Extraia os dados e responda APENAS em JSON no formato:
       });
       const txt = result.response.text().trim();
       const jsonMatch = txt.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
+      if (!jsonMatch) throw new Error('resposta sem JSON');
+      return JSON.parse(jsonMatch[0]) as ReceiptAnalysisResult;
     } catch (err) {
       this.logger.warn(`analyzeReceipt falhou via Gemini: ${err}`);
+      throw err;
     }
-    return {
-      isValid: true,
-      amount: 99.9,
-      date: new Date().toLocaleDateString('pt-BR'),
-      recipient: 'Vibe Telecom',
-      notes: 'Comprovante recebido via autoatendimento',
-    };
   }
 }

@@ -34,7 +34,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     env_file:
-      - .env
+      - ${ISPAGENT_ENV_FILE:-.env}
     environment:
       ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
       ISPAGENT_REDIS_URL: redis://ispagent-redis:6379
@@ -63,7 +63,7 @@ services:
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     env_file:
-      - .env
+      - ${ISPAGENT_ENV_FILE:-.env}
     environment:
       ISPAGENT_DATABASE_URL: postgresql://${ISPAGENT_DB_USER:-ispagent}:${ISPAGENT_DB_PASSWORD:-ispagent_dev_password}@ispagent-db:5432/${ISPAGENT_DB_NAME:-ispagent}?schema=public
       ISPAGENT_REDIS_URL: redis://ispagent-redis:6379
@@ -84,8 +84,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${ISPAGENT_API_PORT:-3001}
     environment:
-      ISPAGENT_WEB_API_URL: http://localhost:${ISPAGENT_API_PORT:-3001}
       PORT: '3000'
       # O server.js gerado pelo "standalone" do Next usa HOSTNAME para bind; sem isso, herda o HOSTNAME
       # que o Docker seta automaticamente (o ID do container) e escuta só nesse endereço, não em

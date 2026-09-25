@@ -204,13 +204,9 @@ export class MockERPAdapter implements ERPAdapter {
     };
   }
 
-  async getOpticalPower(contractId: string): Promise<{ rxPower: number; txPower?: number; status: string; assessment: 'EXCELLENT' | 'GOOD' | 'ATTENUATED' | 'CRITICAL_LOS' } | null> {
-    return {
-      rxPower: -19.5,
-      txPower: 2.2,
-      status: 'NORMAL',
-      assessment: 'EXCELLENT',
-    };
+  // O seed DEMO não tem telemetria de ONU (a telemetria DEMO vem do MockPulseISPAdapter): nada a afirmar.
+  async getOpticalPower(_contractId: string): Promise<{ rxPower: number; txPower?: number; status: string; assessment: 'EXCELLENT' | 'GOOD' | 'ATTENUATED' | 'CRITICAL_LOS' } | null> {
+    return null;
   }
 
   async requestPromiseToPay(contractId: string, cpfcnpj?: string): Promise<{ success: boolean; message: string; deadline?: string }> {

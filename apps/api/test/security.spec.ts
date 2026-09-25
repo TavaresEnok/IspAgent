@@ -14,6 +14,7 @@ import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.servic
 import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
 import { fixedAiResolver } from './helpers/ai-resolver';
+import { RealtimeEventsService } from '../src/events/events.service';
 
 /**
  * P0.9 — prompt injection via mensagem e via documento da Knowledge Base NUNCA altera privilégio.
@@ -44,7 +45,7 @@ describe('P0.9 — prompt injection', () => {
     const conversation = new ConversationService(db, identity);
     const ai = new MockAIProvider();
     const pulseisp = new MockPulseISPAdapter(db);
-    const handoff = new HandoffService(db);
+    const handoff = new HandoffService(db, new RealtimeEventsService());
 
     orchestrator = new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, fixedAiResolver(ai), pulseisp, handoff);
   });

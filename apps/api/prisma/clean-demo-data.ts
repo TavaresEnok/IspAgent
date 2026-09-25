@@ -62,6 +62,9 @@ async function main() {
   const delHandoffs = await prisma.handoff.deleteMany();
   console.log(`[LIMPEZA] Handoffs removidos: ${delHandoffs.count}`);
 
+  await prisma.satisfactionSurvey.deleteMany();
+  await prisma.cancellationRequest.deleteMany();
+
   const delMessages = await prisma.message.deleteMany();
   console.log(`[LIMPEZA] Mensagens removidas: ${delMessages.count}`);
 
