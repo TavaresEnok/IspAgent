@@ -25,6 +25,7 @@ import {
   leadReply,
   scopeReply,
 } from './quick-flows';
+import { isWithinSupportHours, offHoursNotice } from './support-hours';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
 
@@ -35,6 +36,13 @@ const ACCOUNT_INTENTS: Intent[] = [
 const NETWORK_INTENTS: Intent[] = ['SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'SUPORTE_INTERNET'];
 
 const MAX_IDENTIFICATION_ASKS = 2;
+
+/** Transferência fora do expediente: avisa quando a equipe volta em vez de deixar o cliente esperando. */
+function withOffHoursNotice(reply: string, supportHours: string | null | undefined): string {
+  if (!supportHours || isWithinSupportHours(supportHours) !== false) return reply;
+  return `${reply}\n\n${offHoursNotice(supportHours)}`;
+}
+
 const IDENTITY_HANDOFF_MESSAGE =
   'Não consegui localizar o seu cadastro por aqui. Vou te passar para um atendente, que confirma os seus dados e continua o atendimento com você.';
 
@@ -232,7 +240,14 @@ export class AgentOrchestratorService {
         : null;
     const tenantPolicy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
     const companyName = tenantPolicy?.companyName || 'Vibe Telecom';
-    const quick = { tenantId, conversationId, ai, identity: decisionIdentity, reportedProblem: customerMessage };
+    const quick = {
+      tenantId,
+      conversationId,
+      ai,
+      identity: decisionIdentity,
+      reportedProblem: customerMessage,
+      supportHours: tenantPolicy?.supportHours ?? null,
+    };
 
     // 1. Pedido explícito de atendimento humano ou irritação: direto para a fila.
     if (isHumanRequest(customerMessage)) {
@@ -628,6 +643,7 @@ export class AgentOrchestratorService {
       }
     }
 
+    if (outcome === 'HANDOFF') replyText = withOffHoursNotice(replyText, tenantPolicy?.supportHours);
     await this.conversation.appendMessage(conversationId, aiFailed ? 'SYSTEM' : 'AGENT', replyText);
 
     await this.db.client.agentRun.update({
@@ -665,6 +681,7 @@ export class AgentOrchestratorService {
       ai: { model: string; mode: AgentDecision['mode'] };
       identity: AgentDecision['identity'];
       reportedProblem: string;
+      supportHours: string | null;
     },
     turn: {
       intent: Intent;
@@ -703,7 +720,8 @@ export class AgentOrchestratorService {
       });
     }
 
-    await this.conversation.appendMessage(ctx.conversationId, 'AGENT', turn.reply);
+    const reply = turn.handoff ? withOffHoursNotice(turn.reply, ctx.supportHours) : turn.reply;
+    await this.conversation.appendMessage(ctx.conversationId, 'AGENT', reply);
 
     return {
       agentRunId: agentRun.id,

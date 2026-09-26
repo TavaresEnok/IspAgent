@@ -164,6 +164,35 @@ describe('AgentOrchestratorService', () => {
     expect((handoff?.summary as { suggestedNextAction: string }).suggestedNextAction).toMatch(/preço/);
   });
 
+  it('transferência fora do expediente avisa quando a equipe volta; dentro do expediente, não', async () => {
+    const askHuman = (supportHours: string) =>
+      runWithTenant('tnt_demo_alpha', async () => {
+        await db.client.tenantPolicyConfig.update({ where: { tenantId: 'tnt_demo_alpha' }, data: { supportHours } });
+        const conv = await db.client.conversation.create({
+          data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: freshPhone(), status: 'AI_ACTIVE' },
+        });
+        const decision = await ask(conv.id, 'quero falar com um atendente');
+        const reply = await db.client.message.findFirst({ where: { conversationId: conv.id, role: 'AGENT' } });
+        return { decision, reply: reply!.content };
+      });
+
+    const original = await runWithTenant('tnt_demo_alpha', () =>
+      db.client.tenantPolicyConfig.findUniqueOrThrow({ where: { tenantId: 'tnt_demo_alpha' } }),
+    );
+    try {
+      const closed = await askHuman('Segunda, 00h às 00h');
+      expect(closed.decision.outcome).toBe('HANDOFF');
+      expect(closed.reply).toMatch(/assim que o expediente começar/);
+
+      const open = await askHuman('Todos os dias, 24h');
+      expect(open.reply).not.toMatch(/expediente/);
+    } finally {
+      await runWithTenant('tnt_demo_alpha', () =>
+        db.client.tenantPolicyConfig.update({ where: { tenantId: 'tnt_demo_alpha' }, data: { supportHours: original.supportHours } }),
+      );
+    }
+  });
+
   it('interesse comercial repetido na mesma conversa não duplica o lead', async () => {
     const phone = freshPhone();
     const leads = await runWithTenant('tnt_demo_alpha', async () => {
