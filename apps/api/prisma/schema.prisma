@@ -57,6 +57,7 @@ model Tenant {
   commercialLeads  CommercialLead[]
   cancellations    CancellationRequest[]
   surveys          SatisfactionSurvey[]
+  incidentNotices  IncidentNotification[]
 
   @@map("tenants")
 }
@@ -155,6 +156,22 @@ model PulseIspConnection {
   updatedAt DateTime @updatedAt
 
   @@map("pulseisp_connections")
+}
+
+/// Aviso proativo de incidente coletivo (anomalia do PulseISP) já enviado: evita repetir e guarda para
+/// quem avisar da normalização.
+model IncidentNotification {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  anomalyId          String
+  scopeName          String?
+  notifiedPhones     String[]
+  resolvedNotifiedAt DateTime?
+  createdAt          DateTime  @default(now())
+
+  @@unique([tenantId, anomalyId])
+  @@map("incident_notifications")
 }
 
 model Customer {

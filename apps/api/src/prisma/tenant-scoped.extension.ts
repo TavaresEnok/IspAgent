@@ -26,6 +26,7 @@ const TENANT_SCOPED_MODELS = new Set([
   'CancellationRequest',
   'CommercialLead',
   'SatisfactionSurvey',
+  'IncidentNotification',
 ]);
 
 const READ_OPS = new Set([

@@ -518,3 +518,32 @@ testes falhavam. Correções, todas com teste ou validação real:
   (`NEXT_PUBLIC_API_URL`); antes ficava fixa em `:3001`.
 
 **Reversibilidade:** alta; a única migration é aditiva e já estava aplicada no banco de trabalho.
+
+## 2026-09-25/26 — Melhorias de plataforma (branch `melhorias-plataforma`) e incidente no banco local
+
+- **CI** (`.github/workflows/ci.yml`): build, testes, migration faltando (`prisma migrate diff --exit-code`) e
+  `verify.sh --fresh` a cada push.
+- **Fluxos rápidos** extraídos para `agent/quick-flows.ts`: menu só sem assunto reconhecido; transferência
+  só com pedido explícito ("operadora"/"pessoa" soltas não contam); cancelamento pergunta o motivo uma vez
+  e passa para a retenção sem prometer desconto; lead único por contato em aberto, com o canal real.
+- **Encerramento automático**: conversa com a IA parada há `ISPAGENT_CONVERSATION_IDLE_MINUTES` (30) fecha
+  com pedido de avaliação (Web Chat via SSE; WhatsApp com nota 1–5). Parada há mais de 24h, ou sem nenhuma
+  fala do cliente (ex.: só aviso de incidente), fecha em silêncio.
+- **Horário de atendimento**: transferência fora do expediente avisa quando a equipe volta
+  (`agent/support-hours.ts`; texto não reconhecido não muda nada).
+- **IA reserva**: turno respondido pelas regras fica registrado como reserva; disjuntor de 30s agora vale
+  entre turnos (estado no resolver).
+- **Aviso de incidente** (`channels/incident-notifier.service.ts`, tabela `incident_notifications`): queda
+  coletiva ativa no PulseISP → um aviso por incidente aos afetados com telefone válido, e outro na
+  normalização. Opt-in (`ISPAGENT_INCIDENT_AUTO_NOTIFY=true`) e só com WhatsApp configurado. NÃO validado
+  contra a Meta nem contra anomalias reais do PulseISP.
+- **Bug corrigido de passagem:** `PulseIspClient.anomalyDetail` lia `scopeType` no topo da resposta, mas o
+  PulseISP devolve dentro de `anomaly` — todo incidente real virava escopo "REGION".
+
+**Incidente (2026-09-26 ~02:28 UTC): o banco de trabalho foi zerado por mim.** Ao gerar a migration acima,
+montei a URL do banco sombra do `prisma migrate diff` trocando texto no `.env`; o `.env` tinha passado a usar
+`127.0.0.1`, a troca não casou e o Prisma zerou o banco real. Sem backup: perdidos chave do Gemini, conexão
+PulseISP, persona e todo o histórico de conversas. Restaurado: histórico de migrations (`migrate resolve`),
+tenant Vibe + admin (`clean-demo-data.ts`) e os 5 artigos (`seed-vibe.ts`); dumps em `~/ispagent-backups/`.
+Regra daqui em diante: gerar migration só em banco descartável e conferir a URL alvo antes de qualquer
+comando do Prisma que reseta; `pg_dump` antes de operação destrutiva no banco local.

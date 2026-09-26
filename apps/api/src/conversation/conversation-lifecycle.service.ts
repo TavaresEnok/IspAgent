@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { runWithTenant } from '../common/tenant-context';
 import { RealtimeEventsService } from '../events/events.service';
@@ -12,6 +13,7 @@ export const WHATSAPP_CSAT_QUESTION = 'Como foi o atendimento? Responda com uma 
 /** Só conversas com a IA: fila humana e atendente em curso são responsabilidade de gente. */
 const AUTO_CLOSABLE = ['AI_ACTIVE', 'AWAITING_CONFIRMATION'] as const;
 const STALE_AFTER_MS = 24 * 3600_000;
+const BATCH_SIZE = 200;
 
 function idleMinutes(): number {
   const n = Number(process.env.ISPAGENT_CONVERSATION_IDLE_MINUTES);
@@ -49,7 +51,7 @@ export class ConversationLifecycleService implements OnModuleInit, OnModuleDestr
   async closeIdle(now = new Date()): Promise<number> {
     const cutoff = new Date(now.getTime() - idleMinutes() * 60_000);
     const staleCutoff = new Date(now.getTime() - STALE_AFTER_MS);
-    const idleSince = (since: Date) => ({
+    const idleSince = (since: Date): Prisma.ConversationWhereInput => ({
       status: { in: [...AUTO_CLOSABLE] },
       createdAt: { lt: since },
       messages: { none: { createdAt: { gt: since } } },
@@ -61,30 +63,40 @@ export class ConversationLifecycleService implements OnModuleInit, OnModuleDestr
 
     // Varredura entre tenants: cliente sem escopo; cada fechamento roda no contexto do próprio tenant.
     const idleWhere = idleSince(cutoff);
-    const idle = await this.prisma.conversation.findMany({
-      where: idleWhere,
-      select: { id: true, tenantId: true, channel: true, channelUserId: true },
-      take: 200,
-    });
-
     let closed = stale.count;
-    for (const conv of idle) {
-      await runWithTenant(conv.tenantId, async () => {
-        // Condição repetida no update: se o cliente escreveu entre a busca e aqui, não fecha.
-        const { count } = await this.prisma.conversation.updateMany({
-          where: { id: conv.id, ...idleWhere },
-          data: { status: 'CLOSED' },
-        });
-        if (count === 0) return;
-        closed++;
-
-        const text = conv.channel === 'WHATSAPP' ? `${CLOSING_MESSAGE}\n\n${WHATSAPP_CSAT_QUESTION}` : CLOSING_MESSAGE;
-        await this.conversation.appendMessage(conv.id, 'AGENT', text);
-        this.events.emit({ tenantId: conv.tenantId, type: 'STATUS_CHANGED', data: { conversationId: conv.id, status: 'CLOSED' } });
-        if (conv.channel === 'WHATSAPP') await this.whatsapp.sendText(conv.channelUserId, text);
+    // Em lotes: cada conversa processada sai do filtro (fechou, ou o cliente acabou de escrever).
+    for (;;) {
+      const batch = await this.prisma.conversation.findMany({
+        where: idleWhere,
+        select: { id: true, tenantId: true, channel: true, channelUserId: true, messages: { where: { role: 'CUSTOMER' }, take: 1, select: { id: true } } },
+        take: BATCH_SIZE,
       });
+      for (const conv of batch) closed += await this.closeOne(conv, idleWhere);
+      if (batch.length < BATCH_SIZE) break;
     }
     if (closed) this.logger.log(`${closed} conversa(s) encerrada(s) por inatividade.`);
     return closed;
+  }
+
+  private async closeOne(
+    conv: { id: string; tenantId: string; channel: string; channelUserId: string; messages: Array<{ id: string }> },
+    idleWhere: Prisma.ConversationWhereInput,
+  ): Promise<number> {
+    return runWithTenant(conv.tenantId, async () => {
+      // Condição repetida no update: se o cliente escreveu entre a busca e aqui, não fecha.
+      const { count } = await this.prisma.conversation.updateMany({
+        where: { id: conv.id, ...idleWhere },
+        data: { status: 'CLOSED' },
+      });
+      if (count === 0) return 0;
+      // Só aviso do sistema (ex.: incidente) e nenhuma fala do cliente: não há atendimento a encerrar nem avaliar.
+      if (conv.messages.length === 0) return 1;
+
+      const text = conv.channel === 'WHATSAPP' ? `${CLOSING_MESSAGE}\n\n${WHATSAPP_CSAT_QUESTION}` : CLOSING_MESSAGE;
+      await this.conversation.appendMessage(conv.id, 'AGENT', text);
+      this.events.emit({ tenantId: conv.tenantId, type: 'STATUS_CHANGED', data: { conversationId: conv.id, status: 'CLOSED' } });
+      if (conv.channel === 'WHATSAPP') await this.whatsapp.sendText(conv.channelUserId, text);
+      return 1;
+    });
   }
 }
