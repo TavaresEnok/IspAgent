@@ -10,6 +10,7 @@ import {
   isHumanRequest,
 } from '../src/agent/quick-flows';
 import { checkReplyAgainstFacts } from '../src/agent/reply-guard';
+import { cleanTranscription } from '../src/integrations/ai/gemini.provider';
 
 /**
  * Regressões de uma conversa real de teste (Web Chat, 26/09/2026): o agente transferiu para atendente
@@ -66,6 +67,14 @@ describe('regressões de conversa', () => {
       const reply = 'Como o nosso sistema não encontrou informações para esse documento, posso te encaminhar?';
       expect(checkReplyAgainstFacts(reply, [], { customerIdentified: true }).ok).toBe(false);
       expect(checkReplyAgainstFacts(reply, [], { customerIdentified: false }).ok).toBe(true);
+    });
+
+    it('transcrição sem fala ("00:00", marcador, pontuação) vira vazio; fala real passa', () => {
+      for (const junk of ['00:00', '[SEM_FALA]', '"..."', '  ', '12', '[SEM_FALA].']) {
+        expect(cleanTranscription(junk)).toBe('');
+      }
+      expect(cleanTranscription('"minha internet caiu"')).toBe('minha internet caiu');
+      expect(cleanTranscription('meu cpf é 041.039.184-03')).toBe('meu cpf é 041.039.184-03');
     });
 
     it('reply-guard: o horário de atendimento configurado pode ser citado', () => {

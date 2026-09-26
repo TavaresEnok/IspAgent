@@ -24,6 +24,19 @@ import { KEYWORD_RULES } from './mock-ai.provider';
 
 const LLM_TIMEOUT_MS = 15000; // 15 segundos por chamada
 
+const NO_SPEECH_MARKER = '[SEM_FALA]';
+
+/**
+ * Sem fala o modelo às vezes "transcreve" mesmo assim — um tempo ("00:00"), pontuação, o marcador. Isso
+ * não pode virar mensagem do cliente: vazio = o canal pede para repetir ou digitar.
+ */
+export function cleanTranscription(raw: string): string {
+  const text = raw.trim().replace(/^["'“”]+|["'“”]+$/g, '').trim();
+  if (!text || text.includes(NO_SPEECH_MARKER)) return '';
+  if (!/\p{L}{2,}/u.test(text)) return ''; // só números, tempos, pontuação ou ruído
+  return text;
+}
+
 @Injectable()
 export class GeminiProvider implements AIProvider {
   readonly name = 'GeminiProvider';
@@ -195,13 +208,17 @@ export class GeminiProvider implements AIProvider {
                 },
               },
               {
-                text: 'Transcreva com fidelidade absoluta o áudio acima falado em português. Retorne EXCLUSIVAMENTE o texto transcrito, sem introduções, aspas ou comentários adicionais.',
+                text:
+                  'Transcreva com fidelidade absoluta o áudio acima falado em português. Retorne EXCLUSIVAMENTE o ' +
+                  'texto transcrito, sem introduções, aspas ou comentários adicionais. Se não houver fala ' +
+                  `compreensível (silêncio, ruído, áudio vazio), responda exatamente ${NO_SPEECH_MARKER} — nunca ` +
+                  'invente palavras nem descreva o áudio.',
               },
             ],
           },
         ],
       });
-      return result.response.text().trim();
+      return cleanTranscription(result.response.text());
     } catch (err) {
       // Nunca inventar a fala do cliente: o canal trata a falha ("não consegui ouvir o áudio").
       this.logger.warn(`transcribeAudio falhou via Gemini: ${err instanceof Error ? err.message : err}`);

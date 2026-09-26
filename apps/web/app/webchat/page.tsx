@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { API_URL, ApiError, apiFetch, getAccessToken } from '@/lib/api';
+import { toWav16kMono } from './wav';
 
 function PixQrCode({ code }: { code: string }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -72,6 +73,7 @@ const RESERVED_PREFIXES = ['pulse:', 'sgp:'];
 const isReserved = (id: string) => RESERVED_PREFIXES.some((p) => id.startsWith(p));
 const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
 const MAX_RECORDING_MS = 60_000;
+const MIN_RECORDING_SECONDS = 0.8;
 
 /** Id de sessão aleatório e não adivinhável (16-64 chars [A-Za-z0-9_-], o formato que a API exige). */
 function newSessionId(): string {
@@ -474,9 +476,24 @@ export default function WebChatPage() {
     }
   }
 
-  async function sendVoice(blob: Blob) {
+  async function sendVoice(recording: Blob) {
     setSendingVoice(true);
     try {
+      let blob = recording;
+      try {
+        const wav = await toWav16kMono(recording);
+        if (wav.seconds < MIN_RECORDING_SECONDS) {
+          setError('O áudio ficou curto demais. Toque no microfone, fale e toque de novo para enviar.');
+          return;
+        }
+        if (wav.silent) {
+          setError('Não captei nenhuma voz na gravação. Confira se o microfone certo está ativo e não está mudo.');
+          return;
+        }
+        blob = wav.blob;
+      } catch {
+        // Navegador sem decodificador para o formato gravado: envia o original e o servidor tenta mesmo assim.
+      }
       const audioBase64 = await readFileAsBase64(blob);
       const res = await fetch(`${API_URL}/public/webchat/${tenantId}/voice`, {
         method: 'POST',
