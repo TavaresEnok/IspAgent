@@ -4,10 +4,10 @@
  * propósito: não é dado DEMO, não entra no `verify.ps1`, e a senha do admin NÃO é fixa/conhecida — é
  * gerada uma vez e impressa (ou vem de ISPAGENT_VIBE_ADMIN_PASSWORD). Reexecutar não troca a senha.
  */
-import { DEFAULT_KB_ARTICLES, defaultKbArticleId } from '../src/knowledge/default-articles';
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'node:crypto';
+import { ISP_DEFAULT_ARTICLES } from './isp-default-articles';
 
 const prisma = new PrismaClient();
 
@@ -17,7 +17,7 @@ const ADMIN_EMAIL = 'admin@vibe.ispagent.local';
 async function main() {
   await prisma.tenant.upsert({
     where: { id: TENANT_ID },
-    update: { name: 'Vibe Telecom (PulseISP real)' },
+    update: {},
     create: { id: TENANT_ID, name: 'Vibe Telecom (PulseISP real)' },
   });
 
@@ -27,13 +27,13 @@ async function main() {
     create: { tenantId: TENANT_ID },
   });
 
-  // Artigos técnicos padrão da Base de Conhecimento (documentos normais do tenant, editáveis no painel).
-  for (const article of DEFAULT_KB_ARTICLES) {
-    const id = defaultKbArticleId(TENANT_ID, article.slug);
+  // Artigos técnicos iniciais: só cria os que faltam, nunca sobrescreve edições feitas na tela.
+  for (const art of ISP_DEFAULT_ARTICLES) {
+    const id = `${TENANT_ID}_kb_${art.slug}`;
     await prisma.knowledgeDocument.upsert({
       where: { id },
       update: {},
-      create: { id, tenantId: TENANT_ID, title: article.title, content: article.content, source: article.source },
+      create: { id, tenantId: TENANT_ID, title: art.title, content: art.content, source: art.source },
     });
   }
 

@@ -472,6 +472,7 @@ export class SGPAdapter implements ERPAdapter {
       }
     } catch (err) {
       this.logger.warn(`getOpticalPower falhou no SGP para contrato ${contractId}: ${err}`);
+      throw err;
     }
 
     // Sem leitura real da ONU não há sinal a informar (a ferramenta devolve NOT_FOUND).
@@ -494,13 +495,9 @@ export class SGPAdapter implements ERPAdapter {
         message: resp?.msg || resp?.mensagem || 'Contrato não elegível para liberação em promessa no momento.',
       };
     } catch (err) {
-      // Falha na chamada = NÃO liberado. Dizer ao cliente que foi desbloqueado sem ter sido é pior que
-      // encaminhar para um atendente.
+      // Falha na chamada nunca pode virar "desbloqueio concedido": o cliente acreditaria que foi liberado.
       this.logger.warn(`requestPromiseToPay falhou no SGP: ${err}`);
-      return {
-        success: false,
-        message: 'Não consegui confirmar a liberação em confiança no sistema agora — um atendente vai verificar.',
-      };
+      throw err;
     }
   }
 

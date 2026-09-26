@@ -30,6 +30,7 @@ export class TenantContextMiddleware implements NestMiddleware {
 
   use(req: Request, _res: Response, next: NextFunction) {
     const header = req.headers.authorization;
+    // Só o header: o stream SSE do painel usa ticket curto próprio (events.controller), nunca o JWT na URL.
     const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
 
     if (!token) {

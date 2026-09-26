@@ -10,7 +10,7 @@ module.exports = {
   coverageDirectory: '../coverage',
   testEnvironment: 'node',
   roots: ['<rootDir>/src', '<rootDir>/test'],
-  globalSetup: '<rootDir>/test/global-setup.js',
+  globalSetup: '<rootDir>/test/global-setup.ts',
   setupFiles: ['<rootDir>/test/jest.setup.ts'],
   testTimeout: 30000,
 };

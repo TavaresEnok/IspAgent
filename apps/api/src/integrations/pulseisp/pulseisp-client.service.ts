@@ -19,6 +19,16 @@ export interface PulseCustomerSummary {
   contract: { externalId?: string; pppoeLogin?: string; plan: { name: string; downloadMbps: number } | null } | null;
 }
 
+export interface PulseAnomaly {
+  id: string;
+  type: string; // SHARED_OUTAGE | SHARED_OPTICAL_DEGRADATION | ACCESS_SESSION_DROP
+  status: string; // ACTIVE | RESOLVED
+  scopeType: string;
+  scopeName: string;
+  firstDetectedAt: string;
+  affectedCustomers: number;
+}
+
 export class PulseIspError extends Error {
   constructor(
     message: string,
@@ -142,11 +152,31 @@ export class PulseIspClient {
   /** `null` se falhar — o mapeador cai num escopo genérico em vez de derrubar o diagnóstico inteiro. */
   async anomalyDetail(tenantId: string, anomalyId: string): Promise<PulseAnomalyDetail | null> {
     try {
-      return await this.get<PulseAnomalyDetail>(tenantId, `/anomalies/${encodeURIComponent(anomalyId)}?pageSize=1`);
+      // O PulseISP devolve { anomaly, scope, customers, ... }: os campos da anomalia ficam em `anomaly`.
+      const res = await this.get<{ anomaly?: PulseAnomalyDetail }>(tenantId, `/anomalies/${encodeURIComponent(anomalyId)}?pageSize=1`);
+      return res.anomaly ?? null;
     } catch (err) {
       this.logger.warn(`Detalhe da anomalia ${anomalyId} indisponível: ${err instanceof Error ? err.message : err}`);
       return null;
     }
+  }
+
+  async listActiveAnomalies(tenantId: string): Promise<PulseAnomaly[]> {
+    const res = await this.get<{ items: PulseAnomaly[] }>(tenantId, '/anomalies?status=ACTIVE&pageSize=100');
+    return res.items ?? [];
+  }
+
+  /** Status atual da anomalia e uma página dos clientes afetados (ids do PulseISP). */
+  async anomalyCustomers(tenantId: string, anomalyId: string, page: number) {
+    const res = await this.get<{
+      anomaly: { status: string };
+      customers: { items: Array<{ customerId: string }>; totalPages: number };
+    }>(tenantId, `/anomalies/${encodeURIComponent(anomalyId)}?pageSize=200&page=${page}`);
+    return {
+      status: res.anomaly?.status ?? 'UNKNOWN',
+      customerIds: (res.customers?.items ?? []).map((c) => c.customerId),
+      totalPages: res.customers?.totalPages ?? 1,
+    };
   }
 
   /** Botão "Testar": prova login + leitura de verdade (total de clientes monitorados). */

@@ -84,8 +84,8 @@ Status honesto do que está implementado, do que depende de configuração e do 
   com senha; `.env` fora do contexto de build do Docker; migrations aplicadas por um job dedicado
   (`ispagent-migrate`) antes da API; `pnpm audit` sem vulnerabilidades conhecidas.
 - **Testes isolados**: a suíte roda **sempre** em `<banco>_test` (criado, migrado e semeado sozinho) e
-  recusa qualquer banco cujo nome não termine em `_test`. `verify.sh`/`verify.ps1` exigem
-  `ISPAGENT_VERIFY_ALLOW_DESTROY=1` (criam contas DEMO e, com `--fresh`, apagam volumes).
+  recusa qualquer banco cujo nome não termine em `_test`. `verify.sh`/`verify.ps1` rodam numa stack
+  Docker isolada (projeto e volumes próprios) e nunca tocam o banco de trabalho.
 
 ## Não implementado / decisões conscientes
 

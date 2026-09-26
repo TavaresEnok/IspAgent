@@ -1,11 +1,18 @@
 # STATE
-Fase atual: nenhuma — as 10 fases da seção 10 estão completas; **revisão de segurança concluída em 2026-09-21** (ver `DECISIONS.md`, entrada dessa data, e `docs/security.md`).
-Estado dos testes: `pnpm test` → **233/233** em 24 suítes, rodando no banco isolado `<nome>_test` (criado/migrado/semeado sozinho). `pnpm lint` (typecheck api+web) e `pnpm build` passam; `pnpm audit` → 0 vulnerabilidades.
-**Correção de um placar anterior:** antes desta revisão o STATE dizia "todos os P0 passam" — na verdade 3 testes de P0.5/P0.7 falhavam desde que a identificação dinâmica por texto foi introduzida. Os P0 voltam a valer com a identificação por documento (ver DECISIONS).
-Último comando executado com sucesso: `pnpm test` (233/233) + validação em um projeto compose isolado (`docker compose -p ispagent-check up -d --build --wait`: migrate/api/worker/web healthy, login+refresh HTTP 200, produção recusa segredos fracos).
-Próxima ação concreta: (1) aplicar no ambiente real — `docker compose up -d --build` (o job `ispagent-migrate` aplica a migration de índices; a API cifra as credenciais legadas no primeiro acesso); (2) reexecutar/atualizar o e2e `apps/e2e` (ver abaixo); (3) backlog de "Não implementado" em `docs/security.md` (segundo fator de identificação, WhatsApp verificado, etc.).
-Arquivos em edição incompleta: nenhum.
-Bloqueios ativos: nenhum. **`apps/e2e` está desatualizado e NÃO foi reexecutado**: o Web Chat já não tinha o campo "Seu telefone" antes da revisão (a página usa sessão aleatória) e agora a identificação é por CPF no chat; o teste precisa ser reescrito contra a UI atual (precisa de Playwright + stack no ar + banco semeado).
+Fase atual: nenhuma — junção da revisão de segurança (servidor) com a branch `melhorias-plataforma` concluída (ver DECISIONS.md, 2026-09-26).
+Última validação: 2026-09-26.
+Último comando executado com sucesso: `pnpm --filter @ispagent/api typecheck` (api + testes + scripts do Prisma) e `tsc` do web sem erros; `pnpm --filter @ispagent/api test` → **298/298** em 32 suítes (banco `<db>_test`); `prisma migrate diff` das migrations contra o schema → vazio. `verify.sh` não reexecutado após a junção.
+Próxima ação concreta: (1) revogar no SGP o token que ficou no histórico do GitHub e gerar outro no .env; (2) validar WhatsApp com credenciais reais da Meta (webhook assinado + `ISPAGENT_WHATSAPP_TENANT_ID`) — envio, mídia e resposta do atendente nunca rodaram contra a Meta; (3) decidir o `readOnlyMode` da Vibe na tela Políticas (ligado = sem chamado/desbloqueio pela IA).
+Arquivos em edição incompleta: nenhum
+Bloqueios ativos: nenhum. Não validado com serviço real: WhatsApp Cloud API, AnthropicProvider, IXC. Validado com serviço real: SGP (token/app `sac-ajust`), PulseISP.
+Invariantes que já passam — **os 10 P0 da seção 11, todos**: P0.1 (identidade), P0.2 (BillingTool real), P0.3 (fato ausente nunca citado), P0.4 (PulseISP ligado/desligado), P0.5 (handoff completo, AI→HUMAN→AI), P0.6 (policy bloqueia de fato), P0.7 (ambíguo/não encontrado nunca vinculado errado), P0.8 (isolamento de tenant), P0.9 (prompt injection não eleva privilégio, 3 payloads), P0.10 (`verify.ps1 -Fresh` exit 0). Ver `docs/acceptance-evidence.md` para o cruzamento completo com a evidência de cada um.
+
+**P1 (desejáveis, seção 11): 10/10 aprovado desde 2026-09-24 (tempo real via SSE); antes 9/10** — placar corrigido em 2026-09-15 (ver `PROGRESS.md`,
+seção "Placar P1"). Os itens "comportamento quando o AI Provider falha" e "comportamento quando o ERP
+falha" foram implementados/provados (`apps/api/test/upstream-failures.spec.ts`) e "troca AI → humano
+→ AI" ganhou a metade que faltava (atendente responder de fato, `POST /conversations/:id/messages`).
+Web Chat em tempo real entregue em 2026-09-24 (SSE por conversa + stream autenticado do painel). P0 nunca
+dependeu de nenhum destes.
 
 ## Notas para a próxima sessão
 
@@ -114,21 +121,3 @@ Bloqueios ativos: nenhum. **`apps/e2e` está desatualizado e NÃO foi reexecutad
   ambiente Windows/git-bash usado) — se uma sessão futura rodar em Linux/macOS, validar de verdade antes
   de confiar nele, e corrigir o que aparecer (é esperado achar pelo menos um bug, como aconteceu com o
   `.ps1`).
-
-## Notas da revisão de segurança (2026-09-21)
-
-- **Testes**: sempre no banco `<nome>_test` (`apps/api/test/test-db.js`, `global-setup.js`). Nunca aponte testes
-  para o banco de desenvolvimento. `verify.sh`/`verify.ps1` exigem `ISPAGENT_VERIFY_ALLOW_DESTROY=1`.
-- **Identificação**: não reintroduzir busca por nome/código/telefone digitado (`identifyByDocument` é o único
-  caminho). Documento-só = confiança `MEDIUM`. Ver `test/identification-security.spec.ts`.
-- **`AgentOrchestratorService`**: o 10º parâmetro (`IdentityResolutionService`) é `@Optional`; o PulseIspClient/mirror
-  saíram do construtor. `checkReplyAgainstFacts` roda para providers `LIVE`.
-- **Web Chat**: `webchatPublicEnabled()`, `demoEndpointsEnabled()`, `trustWebchatPhone()` em
-  `common/security-config.ts` decidem o comportamento por `ISPAGENT_ENV`. O simulador do PulseISP é do painel.
-- **Credenciais**: `getCredential`/`getRaw` devolvem a chave decifrada (só em memória); gravar sempre via
-  `saveCredential`/`save` (cifram). `ISPAGENT_ENCRYPTION_KEY` perdida = credenciais ilegíveis.
-- **Prisma**: a extensão de tenant é fail-closed — operação nova precisa de tratamento explícito; escritas
-  aninhadas de relação são recusadas (faça a escrita da relação separadamente).
-- **pnpm**: lockfile compatível com pnpm 9 e 12; overrides em `pnpm-workspace.yaml` **e** `package.json#pnpm`.
-- **Migration nova**: `20260921230000_security_perf_indexes` (só índices, inclui o GIN da busca da KB). Foi aplicada
-  só no banco de teste; o banco de desenvolvimento a recebe via `ispagent-migrate` no próximo `compose up`.

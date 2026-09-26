@@ -2,36 +2,35 @@ name: CI
 
 on:
   push:
+    branches: ['**']
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
+  build-and-test:
     runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: ispagent
-          POSTGRES_PASSWORD: ci_password
+          POSTGRES_PASSWORD: ispagent_ci
           POSTGRES_DB: ispagent
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U ispagent -d ispagent"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+          --health-cmd "pg_isready -U ispagent" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      # Os testes derivam o banco `ispagent_test` deste (apps/api/test/test-db.js) e o criam sozinhos.
-      ISPAGENT_DATABASE_URL: postgresql://ispagent:ci_password@localhost:5432/ispagent?schema=public
+      # Os testes derivam o banco `ispagent_test` deste (apps/api/test/test-db.ts) e o criam sozinhos.
+      ISPAGENT_DATABASE_URL: postgresql://ispagent:ispagent_ci@localhost:5432/ispagent?schema=public
       ISPAGENT_ENV: test
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 12.5.1
-
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -42,6 +41,17 @@ jobs:
       - run: cp .env.example .env
       - run: pnpm --filter @ispagent/shared build
       - run: pnpm --filter @ispagent/api prisma:generate
+
+      # Barra schema.prisma alterado sem migration (aconteceu em 2026-09-23: tabelas só no banco local).
+      - name: Migrations cobrem o schema
+        working-directory: apps/api
+        run: |
+          PGPASSWORD=ispagent_ci psql -h localhost -U ispagent -d ispagent -c "CREATE DATABASE shadow_ci"
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "postgresql://ispagent:ispagent_ci@localhost:5432/shadow_ci" \
+            --exit-code
 
       - name: Typecheck (api + web)
         run: pnpm lint
@@ -56,3 +66,25 @@ jobs:
 
       - name: Auditoria de dependências
         run: pnpm audit --audit-level high
+
+  verify:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: verify.sh (stack Docker isolada, de ponta a ponta)
+        run: bash scripts/verify.sh --fresh
+      - name: Evidências
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification
+          path: artifacts/verification/

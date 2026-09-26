@@ -87,6 +87,8 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
         es.onmessage = (event) => {
           try {
             const payload = JSON.parse(event.data);
+            // Outras telas (ex.: detalhe da conversa) se atualizam ouvindo este evento, sem abrir outro stream.
+            window.dispatchEvent(new CustomEvent('ispagent:realtime', { detail: payload }));
             if (payload?.type === 'NEW_HANDOFF') {
               setPendingHandoffs((prev) => prev + 1);
               playNotificationChime();

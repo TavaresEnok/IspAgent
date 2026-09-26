@@ -7,6 +7,7 @@ import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { ConversationService } from '../conversation/conversation.service';
 import { Roles } from '../common/decorators/roles.decorator';
 import { maskDocument } from '../common/mask-document';
+import { WhatsAppCloudClient } from '../channels/whatsapp-cloud.client';
 
 class SendHumanMessageDto {
   @IsString()
@@ -27,6 +28,7 @@ export class ConversationsController {
   constructor(
     private readonly db: TenantPrismaService,
     private readonly conversation: ConversationService,
+    private readonly whatsapp: WhatsAppCloudClient,
   ) {}
 
   @Get()
@@ -164,6 +166,8 @@ export class ConversationsController {
       },
     });
 
-    return message;
+    // No WhatsApp a mensagem só chega ao cliente se for enviada pela API; no Web Chat ele lê do histórico.
+    const delivery = conv.channel === 'WHATSAPP' ? await this.whatsapp.sendText(conv.channelUserId, dto.content) : null;
+    return { ...message, delivery };
   }
 }

@@ -17,6 +17,7 @@ import { runWithTenant } from '../src/common/tenant-context';
 import { createTestAgentRun } from './helpers/agent-run';
 import { fixedAiResolver } from './helpers/ai-resolver';
 import { FailingERPAdapter, SlowERPAdapter, FailingPulseISPAdapter, FailingAIProvider } from './doubles/failing-adapters';
+import { RealtimeEventsService } from '../src/events/events.service';
 
 /**
  * P1 "comportamento correto quando o AI Provider/ERP falha" (seção 11, itens 9 e 10) — nunca exercitado
@@ -55,7 +56,7 @@ describe('P1 — comportamento quando um upstream falha', () => {
     const conversation = new ConversationService(db, identity);
     const ai = overrides.ai ?? new MockAIProvider();
     const pulseisp = overrides.pulseisp ?? new MockPulseISPAdapter(db);
-    const handoff = new HandoffService(db);
+    const handoff = new HandoffService(db, new RealtimeEventsService());
 
     return new AgentOrchestratorService(db, conversation, executor, policy, erpTools, knowledge, fixedAiResolver(ai), pulseisp as any, handoff);
   }

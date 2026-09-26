@@ -51,6 +51,7 @@ export interface ReceiptAnalysisResult {
   date?: string;
   recipient?: string;
   barcode?: string;
+  authCode?: string;
   notes?: string;
 }
 

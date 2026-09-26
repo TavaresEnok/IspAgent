@@ -14,6 +14,7 @@ import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.servic
 import { HandoffService } from '../src/handoff/handoff.service';
 import { runWithTenant } from '../src/common/tenant-context';
 import { fixedAiResolver } from './helpers/ai-resolver';
+import { RealtimeEventsService } from '../src/events/events.service';
 
 /**
  * P0.5 — handoff gera resumo, entra na fila, atendente assume e a IA para de responder; teste de que
@@ -29,7 +30,7 @@ describe('Handoff', () => {
     prisma = new PrismaService();
     await prisma.$connect();
     db = new TenantPrismaService(prisma);
-    handoff = new HandoffService(db);
+    handoff = new HandoffService(db, new RealtimeEventsService());
 
     const policy = new PolicyEngineService(db);
     const executor = new ToolExecutorService(db, policy);
@@ -83,6 +84,7 @@ describe('Handoff', () => {
     };
     expect(summary.customerId).toBeNull();
     expect(summary.reportedProblem).toContain('fatura');
+    expect(summary.reason).toMatch(/identificar/);
     expect(summary.reason).toBeTruthy();
     expect(summary.suggestedNextAction).toBeTruthy();
 

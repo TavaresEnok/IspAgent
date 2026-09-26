@@ -1,29 +1,39 @@
+import { EventEmitter } from 'node:events';
 import { SGPAdapter } from '../src/integrations/erp/sgp.adapter';
 import { SgpClientService, SgpError } from '../src/integrations/erp/sgp-client.service';
-import { EventEmitter } from 'node:events';
 import { runWithTenant } from '../src/common/tenant-context';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const httpsModule = require('https');
-
-/** Resposta HTTP falsa na camada `https` (o cliente SGP não usa fetch): nenhum teste toca o SGP real. */
-function fakeHttps(statusCode: number, body: unknown) {
-  return jest.spyOn(httpsModule, 'request').mockImplementation(((_opts: unknown, cb: (res: EventEmitter) => void) => {
-    const res = Object.assign(new EventEmitter(), { statusCode });
-    const req = Object.assign(new EventEmitter(), {
-      write: () => true,
-      destroy: () => undefined,
-      end: () => {
-        cb(res);
-        res.emit('data', JSON.stringify(body));
-        res.emit('end');
-      },
-    });
+// Transporte falso: nenhum teste deste arquivo pode alcançar o SGP real. Sem resposta programada, falha alto.
+function fakeTransport(reply?: { status: number; body: unknown }) {
+  return ((_opts: unknown, onResponse: (res: EventEmitter & { statusCode: number }) => void) => {
+    const req = new EventEmitter() as EventEmitter & { write: () => void; end: () => void; destroy: () => void };
+    req.write = () => undefined;
+    req.destroy = () => undefined;
+    req.end = () => {
+      if (!reply) {
+        req.emit('error', new Error('teste tentou chamar o SGP real'));
+        return;
+      }
+      const res = Object.assign(new EventEmitter(), { statusCode: reply.status });
+      onResponse(res);
+      res.emit('data', JSON.stringify(reply.body));
+      res.emit('end');
+    };
     return req;
-  }) as never);
+  }) as any;
 }
 
 describe('SGPAdapter & SgpClientService', () => {
+  const savedEnv = { ...process.env };
+  beforeAll(() => {
+    process.env.ISPAGENT_SGP_BASE_URL = 'https://sgp.invalid';
+    process.env.ISPAGENT_SGP_TOKEN = 'token-de-teste';
+    process.env.ISPAGENT_SGP_APP = 'app-de-teste';
+  });
+  afterAll(() => {
+    process.env = savedEnv;
+  });
+
   let mockDb: any;
   let sgpClient: SgpClientService;
   let adapter: SGPAdapter;
@@ -67,7 +77,7 @@ describe('SGPAdapter & SgpClientService', () => {
       },
     };
 
-    sgpClient = new SgpClientService();
+    sgpClient = new SgpClientService(fakeTransport());
     adapter = new SGPAdapter(sgpClient, mockDb);
   });
 
@@ -87,7 +97,7 @@ describe('SGPAdapter & SgpClientService', () => {
     });
 
     it('request lança SgpError com instrução clara de IP em caso de 403', async () => {
-      fakeHttps(403, { detail: 'Credenciais de autenticação incorretas.' });
+      sgpClient = new SgpClientService(fakeTransport({ status: 403, body: { detail: 'Credenciais de autenticação incorretas.' } }));
 
       await expect(sgpClient.consultarPlanos()).rejects.toThrow(/Hosts Permitidos/);
       jest.restoreAllMocks();
@@ -183,10 +193,9 @@ describe('SGPAdapter & SgpClientService', () => {
         ],
       });
 
-      // O adapter completa PIX/PDF das faturas em aberto pela 2ª via do SGP.
-      jest.spyOn(sgpClient, 'segundaViaFatura').mockResolvedValue({
-        links: [{ codigopix: '00020126580014br.gov.bcb.pix...' }],
-      });
+      jest.spyOn(sgpClient, 'segundaViaFatura').mockImplementation(async (_contrato: unknown, titulo: unknown) =>
+        titulo === '102' ? ({ links: [{ codigopix: '00020126580014br.gov.bcb.pix...' }] } as any) : ({ links: [] } as any),
+      );
 
       const invoices = await runWithTenant('tnt_vibe', () => adapter.getInvoices('sgp_5678'));
       expect(invoices).toHaveLength(3);
@@ -249,11 +258,12 @@ describe('SGPAdapter & SgpClientService', () => {
       jest.spyOn(sgpClient, 'liberarPromessa').mockRejectedValueOnce(new SgpError('timeout'));
 
       await runWithTenant('tnt_vibe', async () => {
-        expect(await adapter.getOpticalPower('sgp_5678')).toBeNull();
+        // Erro de consulta propaga (a ferramenta registra UPSTREAM_ERROR): nunca um sinal "excelente" inventado.
+        await expect(adapter.getOpticalPower('sgp_5678')).rejects.toThrow();
         expect(await adapter.getServiceStatus('sgp_5678')).toBeNull();
-        const promise = await adapter.requestPromiseToPay('sgp_5678');
-        expect(promise.success).toBe(false);
-        expect(promise.deadline).toBeUndefined();
+        // Falha na liberação vira erro (a ferramenta registra UPSTREAM_ERROR e o turno vai a um atendente),
+        // nunca "desbloqueio concedido".
+        await expect(adapter.requestPromiseToPay('sgp_5678')).rejects.toThrow();
       });
       jest.restoreAllMocks();
     });

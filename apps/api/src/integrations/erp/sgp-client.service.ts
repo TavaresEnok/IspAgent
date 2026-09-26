@@ -1,5 +1,5 @@
 import * as https from 'https';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 
 export interface SgpConfig {
   baseUrl: string;
@@ -29,7 +29,7 @@ export class SgpError extends Error {
 export class SgpClientService {
   private readonly logger = new Logger(SgpClientService.name);
 
-  constructor() {}
+  constructor(@Optional() private readonly transport: typeof https.request = https.request) {}
 
   getConfig(): SgpConfig {
     return {
@@ -90,7 +90,7 @@ export class SgpClientService {
         },
       };
 
-      const req = https.request(options, (res) => {
+      const req = this.transport(options, (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {

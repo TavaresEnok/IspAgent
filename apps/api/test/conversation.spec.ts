@@ -47,6 +47,8 @@ describe('conversation engine', () => {
         }
         await db.client.agentRun.deleteMany({ where: { conversationId: c.id } });
         await db.client.handoff.deleteMany({ where: { conversationId: c.id } });
+        await db.client.satisfactionSurvey.deleteMany({ where: { conversationId: c.id } });
+        await db.client.cancellationRequest.deleteMany({ where: { conversationId: c.id } });
         await db.client.message.deleteMany({ where: { conversationId: c.id } });
         await db.client.conversation.delete({ where: { id: c.id } });
       }

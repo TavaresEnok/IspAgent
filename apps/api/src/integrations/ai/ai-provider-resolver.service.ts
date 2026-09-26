@@ -5,7 +5,7 @@ import { MockAIProvider } from './mock-ai.provider';
 import { AnthropicProvider } from './anthropic.provider';
 import { GeminiProvider } from './gemini.provider';
 import { OpenAIProvider } from './openai.provider';
-import { FallbackAIProvider } from './fallback-ai.provider';
+import { CircuitBreaker, FallbackAIProvider } from './fallback-ai.provider';
 
 export interface AiConnectionTestResult {
   ok: boolean;
@@ -32,6 +32,7 @@ const TEST_MESSAGE = 'minha internet caiu desde ontem à noite';
 @Injectable()
 export class AiProviderResolverService {
   private readonly logger = new Logger(AiProviderResolverService.name);
+  private readonly breakers = new Map<string, CircuitBreaker>();
 
   constructor(
     private readonly config: AiConfigService,
@@ -49,7 +50,9 @@ export class AiProviderResolverService {
     }
 
     const primary = this.build(provider, { apiKey: credential?.apiKey ?? undefined, model: credential?.model ?? undefined });
-    return new FallbackAIProvider(primary, this.mock);
+    const key = `${tenantId}:${provider}`;
+    if (!this.breakers.has(key)) this.breakers.set(key, { openUntil: 0 });
+    return new FallbackAIProvider(primary, this.mock, this.breakers.get(key));
   }
 
   /** Monta uma instância para um provider específico com a chave/modelo dados (não toca no banco). */

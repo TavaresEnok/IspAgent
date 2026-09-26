@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { Conversation, ConversationChannel, MessageRole } from '@prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { IdentityResolutionService, IdentityResolution } from '../identity/identity-resolution.service';
 import { currentTenantId } from '../common/tenant-context';
 import { trustWebchatPhone } from '../common/security-config';
+import { RealtimeEventsService } from '../events/events.service';
 
 /**
  * `tenantId` é passado explicitamente aqui (via `currentTenantId()`) para satisfazer o tipo gerado
@@ -30,6 +31,7 @@ export class ConversationService {
   constructor(
     private readonly db: TenantPrismaService,
     private readonly identity: IdentityResolutionService,
+    @Optional() private readonly events?: RealtimeEventsService,
   ) {}
 
   /**
@@ -91,9 +93,12 @@ export class ConversationService {
   }
 
   async appendMessage(conversationId: string, role: MessageRole, content: string) {
-    return this.db.client.message.create({
-      data: { tenantId: requireTenantId(), conversationId, role, content },
+    const tenantId = requireTenantId();
+    const message = await this.db.client.message.create({
+      data: { tenantId, conversationId, role, content },
     });
+    this.events?.emit({ tenantId, type: 'NEW_MESSAGE', data: { conversationId, message } });
+    return message;
   }
 
   /**

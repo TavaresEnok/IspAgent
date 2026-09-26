@@ -9,9 +9,13 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Req,
+  Sse,
 } from '@nestjs/common';
 import { Request } from 'express';
+import { EMPTY, Observable } from 'rxjs';
+import { RealtimeEventsService } from '../events/events.service';
 import { Throttle } from '@nestjs/throttler';
 import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { ROLE_HIERARCHY, Role } from '@ispagent/shared';
@@ -44,8 +48,9 @@ const MAX_MEDIA_BASE64 = 8_000_000;
 const RECEIPT_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'];
 const AUDIO_MIME = ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/x-m4a', 'audio/aac'];
 
-const AUDIO_NOT_UNDERSTOOD =
-  'Não consegui ouvir o seu áudio por aqui. Pode me escrever em poucas palavras o que você precisa?';
+const AUDIO_NOT_UNDERSTOOD = 'Não consegui entender o seu áudio. Pode escrever a sua mensagem, por favor?';
+const RECEIPT_NOT_UNDERSTOOD =
+  'Não consegui ler esse arquivo como comprovante. Pode enviar uma foto mais nítida, ou escrever o valor e a data do pagamento?';
 
 class ChannelUserDto {
   @IsString()
@@ -119,6 +124,7 @@ export class WebchatController {
     private readonly orchestrator: AgentOrchestratorService,
     @Inject(ERP_ADAPTER) private readonly erp: ERPAdapter,
     private readonly aiResolver: AiProviderResolverService,
+    private readonly events: RealtimeEventsService,
   ) {}
 
   @Public()
@@ -144,6 +150,29 @@ export class WebchatController {
     return this.withConversation(tenantId, dto.channelUserId, req, token, async (convId) => ({
       decision: await this.orchestrator.handleMessage(convId, dto.message),
     }));
+  }
+
+  /**
+   * Mensagens novas da conversa em tempo real (ex.: resposta do atendente humano), sem polling. Mesmas
+   * checagens de canal e sessão da leitura; o `EventSource` não manda header, então o token de sessão vem
+   * na query (é um HMAC da própria conversa, não uma credencial de staff).
+   */
+  @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Sse(':tenantId/conversation/:channelUserId/stream')
+  async streamConversation(
+    @Param('tenantId') tenantId: string,
+    @Param('channelUserId') channelUserId: string,
+    @Req() req: Request,
+    @Query('token') token?: string,
+  ): Promise<Observable<{ data: unknown }>> {
+    this.assertEnabled();
+    await this.requireTenant(tenantId);
+    this.assertChannelUserAllowed(tenantId, channelUserId, req);
+    const conv = await runWithTenant(tenantId, () => this.findOpenConversation(channelUserId));
+    if (!conv) return EMPTY;
+    this.assertSession(tenantId, channelUserId, req, token, true);
+    return this.events.streamForConversation(tenantId, conv.id);
   }
 
   // Leitura pura: nunca cria conversa (um GET não pode ter efeito colateral).
@@ -305,24 +334,23 @@ export class WebchatController {
     @Req() req: Request,
     @Headers('x-webchat-token') token?: string,
   ) {
-    return this.withConversation(tenantId, dto.channelUserId, req, token, async (convId) => {
+    return this.withConversation(tenantId, dto.channelUserId, req, token, async (convId, status) => {
       const ai = await this.aiResolver.resolve(tenantId);
       let receiptAnalysis: ReceiptAnalysisResult | null = null;
       if (typeof ai.analyzeReceipt === 'function') {
         receiptAnalysis = await ai.analyzeReceipt(dto.fileBase64, dto.mimeType || 'image/jpeg').catch(() => null);
       }
 
-      let text = '[Comprovante de pagamento enviado pelo cliente — leitura automática indisponível].';
-      if (receiptAnalysis?.isValid) {
-        const amount = receiptAnalysis.amount
-          ? `R$ ${receiptAnalysis.amount.toFixed(2).replace('.', ',')}`
-          : 'valor não identificado';
-        const date = receiptAnalysis.date ?? 'data não identificada';
-        text = `[Comprovante de pagamento enviado pelo cliente — leitura automática, não confirmada: ${amount}, ${date}].`;
-      } else if (receiptAnalysis) {
-        text = '[Arquivo enviado pelo cliente como comprovante — a leitura automática não reconheceu um pagamento].';
+      // Sem leitura confiável, nada é repassado ao agente como se o cliente tivesse dito: pede de novo.
+      if (!receiptAnalysis?.isValid) {
+        await this.conversation.appendMessage(convId, 'CUSTOMER', '[Arquivo anexado pelo cliente]');
+        if (status !== 'HUMAN_ACTIVE') await this.conversation.appendMessage(convId, 'AGENT', RECEIPT_NOT_UNDERSTOOD);
+        return { receiptAnalysis, decision: null };
       }
-      const message = `${text} Já efetuei o pagamento, segue o comprovante.`;
+      const amount = Number(receiptAnalysis.amount);
+      const amountStr = Number.isFinite(amount) && amount > 0 ? `R$ ${amount.toFixed(2).replace('.', ',')}` : 'valor não identificado';
+      const date = receiptAnalysis.date ?? 'data não identificada';
+      const message = `[Comprovante de pagamento enviado pelo cliente — leitura automática, não confirmada: ${amountStr}, ${date}]. Já efetuei o pagamento, segue o comprovante.`;
 
       return { receiptAnalysis, decision: await this.orchestrator.handleMessage(convId, message) };
     });

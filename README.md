@@ -49,11 +49,11 @@ nome não termine em `_test`). O CI (`.github/workflows/ci.yml`) roda typecheck,
 
 ## Verificação end-to-end
 
-Só em ambiente **descartável**: o script cria contas DEMO com senha conhecida e, com `-Fresh`/`--fresh`,
-apaga os volumes do compose (banco inclusive). Por isso exige `ISPAGENT_VERIFY_ALLOW_DESTROY=1`.
+Roda numa stack Docker **isolada** (projeto e volumes próprios): nunca toca o banco de trabalho, então
+pode rodar no servidor. `-Fresh`/`--fresh` recria só essa stack de verificação.
 
 ```powershell
-$env:ISPAGENT_VERIFY_ALLOW_DESTROY=1; .\scripts\verify.ps1 -Fresh
+.\scripts\verify.ps1 -Fresh
 ```
 
 Sobe o ambiente do zero, valida migrations/seed, autentica, testa identificação de cliente, tool calling,

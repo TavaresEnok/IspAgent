@@ -508,3 +508,120 @@ dinâmica por texto tinha quebrado o invariante sem ninguém perceber (o placar 
 **Não feito (ver "Não implementado" em `docs/security.md`):** segundo fator de identificação, RLS no
 Postgres, cookie httpOnly + CSRF, CSP com nonces, rate limit em Redis, criptografia do CPF em repouso,
 migração do `@google/generative-ai`, e o e2e (`apps/e2e`) não foi reexecutado (ver `STATE.md`).
+## 2026-09-24 — Revisão dos commits `dab7f5d`/`e32e051`/`4cd33fe`: o que não funcionava e foi corrigido
+
+**Contexto:** os três commits de 23–24/09 anunciavam persona, multi-intenção, retenção, leads, copiloto,
+WhatsApp, tempo real (SSE), CSAT, OCR de comprovante e áudio. Ao validar, o projeto não compilava e 23
+testes falhavam. Correções, todas com teste ou validação real:
+
+- **Build e banco:** `copyToClipboard` inexistente no Web Chat (build do Next quebrado). As 3 tabelas e 8
+  colunas novas estavam só no `schema.prisma`, sem migration (qualquer ambiente novo subiria sem elas):
+  criada `20260924120000_persona_leads_csat_retention` e marcada como aplicada no banco de trabalho
+  (`prisma migrate resolve`), que já tinha o schema via `db push`. Reset do Web Chat e helpers de teste
+  passaram a apagar `satisfaction_surveys`/`cancellation_requests` (FK `RESTRICT` quebrava o reset).
+- **Testes isolados do banco de trabalho:** o banco local agora só tem a Vibe (`clean-demo-data.ts`), e os
+  testes dependiam do seed DEMO nele. Jest usa `<banco>_test` (`test/test-db.ts` + `global-setup.ts`
+  aplica migrations e seed). O seed DEMO fixa `readOnlyMode=false`/`canCreateTicket=true`, porque os
+  defaults do schema viraram "somente leitura" para tenants reais.
+- **Dado inventado (princípio 1.2), o mais grave:**
+  - `SGPAdapter.requestPromiseToPay`: erro na chamada devolvia "desbloqueio ativado com sucesso" ao
+    cliente. Agora propaga (UPSTREAM_ERROR → atendente).
+  - `SGPAdapter.getOpticalPower` e `MockERPAdapter.getOpticalPower`: sem leitura (ou com erro) devolviam
+    "-19.8 dBm, EXCELENTE". Agora `null`/erro. A leitura óptica do ERP só roda quando o PulseISP não roda
+    (as duas fontes chegaram a se contradizer no mesmo turno).
+  - Áudio/comprovante: falha de transcrição virava "estou com problemas na minha internet" na boca do
+    cliente; qualquer arquivo virava "já paguei, desbloqueie" com `isValid: true`. O Mock não lê mídia
+    (funções removidas), o Gemini propaga erro, e os canais pedem ao cliente para escrever.
+  - Mock: "fibra recebendo sinal normal" fixo no caso multi-assunto; "chamados pausados para
+    manutenção" fixo. Agora seguem o status real e `canCreateTicket`.
+  - Base de conhecimento: 5 artigos embutidos no código casavam com qualquer palavra de 3+ letras
+    ("que", "com") e os sinônimos com AND escondiam o documento certo. Artigos movidos para a KB real da
+    Vibe (`seed-vibe.ts`, editáveis na tela), sinônimos com OR, sem `try/catch` que transformava erro em
+    "nada encontrado".
+- **P0.7 (identidade):** a identificação dinâmica aceitava parte do nome (`contains` + `findFirst`) e o
+  primeiro resultado do PulseISP — "sou o João" vinculava o primeiro João e mostrava a fatura dele. Agora
+  só identificador exato (documento, telefone, código, login) e só com resultado único. O pedido de CPF
+  não tinha limite (loop infinito): após 2 pedidos sem identificação, vai para a fila humana com motivo.
+- **Credencial no código:** `sgp-client.service.ts` tinha o token real do SGP como fallback — removido
+  (as variáveis já estavam no `.env`). **Continua no histórico do GitHub: precisa ser revogado no SGP.**
+  O teste do SGP chamava a API real (mockava `fetch`, mas o cliente usa `https`): transporte injetável.
+- **Multi-intenção com IA real nunca rodou:** `FallbackAIProvider` (que embrulha o Gemini) não repassava
+  `classifyIntents`, `transcribeAudio` nem `analyzeReceipt`. Agora repassa.
+- **WhatsApp não enviava nada:** a resposta ia no corpo do webhook (a Meta ignora). `WhatsAppCloudClient`
+  envia pela API oficial (`ISPAGENT_WHATSAPP_ACCESS_TOKEN`/`_PHONE_NUMBER_ID`), baixa mídia pelo id, e a
+  resposta do atendente (`POST /conversations/:id/messages`) também é entregue. O aviso em massa, antes
+  público e só gravado no banco, exige login de supervisor/admin e informa o que foi de fato entregue.
+  NÃO validado com conta real da Meta (sem credenciais).
+- **Tempo real (P1 #4):** o SSE só tinha eventos de handoff, tenant fixo `tnt_vibe` e rota pública. Agora
+  toda mensagem emite `NEW_MESSAGE`; o painel conecta com o próprio token (`?access_token=`, só nessa
+  rota) e o Web Chat do cliente tem stream só da própria conversa. Validado no browser: mensagem enviada
+  de fora aparece no chat sem recarregar.
+- **Verificação isolada:** `verify.sh`/`verify.ps1` rodavam contra a stack e o banco de trabalho — o
+  `-Fresh` apagaria a Vibe e o seed DEMO seria gravado nela. Agora usam o projeto compose
+  `ispagent-verify` (portas 3201/3210/5533/6480, `.env.verify` gerado do `.env.example`) e nunca tocam
+  no `.env`. `verify.sh` não depende mais de `jq` (usa `node`). A imagem web recebe a URL da API no build
+  (`NEXT_PUBLIC_API_URL`); antes ficava fixa em `:3001`.
+
+**Reversibilidade:** alta; a única migration é aditiva e já estava aplicada no banco de trabalho.
+
+## 2026-09-25/26 — Melhorias de plataforma (branch `melhorias-plataforma`) e incidente no banco local
+
+- **CI** (`.github/workflows/ci.yml`): build, testes, migration faltando (`prisma migrate diff --exit-code`) e
+  `verify.sh --fresh` a cada push.
+- **Fluxos rápidos** extraídos para `agent/quick-flows.ts`: menu só sem assunto reconhecido; transferência
+  só com pedido explícito ("operadora"/"pessoa" soltas não contam); cancelamento pergunta o motivo uma vez
+  e passa para a retenção sem prometer desconto; lead único por contato em aberto, com o canal real.
+- **Encerramento automático**: conversa com a IA parada há `ISPAGENT_CONVERSATION_IDLE_MINUTES` (30) fecha
+  com pedido de avaliação (Web Chat via SSE; WhatsApp com nota 1–5). Parada há mais de 24h, ou sem nenhuma
+  fala do cliente (ex.: só aviso de incidente), fecha em silêncio.
+- **Horário de atendimento**: transferência fora do expediente avisa quando a equipe volta
+  (`agent/support-hours.ts`; texto não reconhecido não muda nada).
+- **IA reserva**: turno respondido pelas regras fica registrado como reserva; disjuntor de 30s agora vale
+  entre turnos (estado no resolver).
+- **Aviso de incidente** (`channels/incident-notifier.service.ts`, tabela `incident_notifications`): queda
+  coletiva ativa no PulseISP → um aviso por incidente aos afetados com telefone válido, e outro na
+  normalização. Opt-in (`ISPAGENT_INCIDENT_AUTO_NOTIFY=true`) e só com WhatsApp configurado. NÃO validado
+  contra a Meta nem contra anomalias reais do PulseISP.
+- **Bug corrigido de passagem:** `PulseIspClient.anomalyDetail` lia `scopeType` no topo da resposta, mas o
+  PulseISP devolve dentro de `anomaly` — todo incidente real virava escopo "REGION".
+
+**Incidente (2026-09-26 ~02:28 UTC): o banco de trabalho foi zerado por mim.** Ao gerar a migration acima,
+montei a URL do banco sombra do `prisma migrate diff` trocando texto no `.env`; o `.env` tinha passado a usar
+`127.0.0.1`, a troca não casou e o Prisma zerou o banco real. Sem backup: perdidos chave do Gemini, conexão
+PulseISP, persona e todo o histórico de conversas. Restaurado: histórico de migrations (`migrate resolve`),
+tenant Vibe + admin (`clean-demo-data.ts`) e os 5 artigos (`seed-vibe.ts`); dumps em `~/ispagent-backups/`.
+Regra daqui em diante: gerar migration só em banco descartável e conferir a URL alvo antes de qualquer
+comando do Prisma que reseta; `pg_dump` antes de operação destrutiva no banco local.
+
+## 2026-09-26 — Junção das duas linhas de correção (servidor × `melhorias-plataforma`)
+
+**Contexto:** a revisão de segurança (21/09, feita no servidor) e a correção dos commits v2 (24/09, feita
+em outra máquina, branch `melhorias-plataforma`) partiram de estados diferentes e corrigiram em paralelo
+muitos dos mesmos problemas. A junção é um merge com os dois históricos; onde as soluções divergiam:
+
+- **Identificação:** fica a regra da revisão (só CPF/CNPJ completo, exato e único, bloqueio por tentativas);
+  a outra linha ainda aceitava código de contrato de 4–8 dígitos e login (sequenciais = adivinháveis). Da
+  outra linha entra "parar de pedir o documento após 2 pedidos e passar para um atendente". Com o SGP ligado,
+  o ERP é consultado primeiro e o cadastro do ERP prevalece sobre espelhos antigos do PulseISP.
+- **Rede de cliente real:** contrato do SGP busca a telemetria no PulseISP real pelo CPF do titular (login
+  PPPoE); antes caía no adapter DEMO ("saudável" para qualquer contrato). Sem PulseISP, a leitura óptica do
+  ERP complementa a base de conhecimento (regra da outra linha: nunca duas fontes de sinal no mesmo turno).
+- **WhatsApp:** o cliente (`WhatsAppCloudClient`) e os recursos da outra linha (CSAT pelo WhatsApp, respostas
+  múltiplas, aviso de queda coletiva) com as proteções da revisão: assinatura `X-Hub-Signature-256`
+  obrigatória, tenant só por `ISPAGENT_WHATSAPP_TENANT_ID`, canal desligado por padrão, nenhuma resposta no
+  corpo HTTP, mídia com limite de tamanho/tempo e só do CDN da Meta. A outra linha ainda aceitava webhook
+  sem assinatura e tenant pela URL.
+- **Tempo real:** painel por ticket curto (`POST /events/ticket`), não JWT na URL (`?access_token=`, que vaza
+  em logs/histórico); o stream por conversa do Web Chat (da outra linha) passou pelas checagens de canal e
+  de sessão do Web Chat.
+- **Migrations:** as duas linhas criaram a migration das tabelas v2. Ficou a da outra linha
+  (`20260924120000_persona_leads_csat_retention`, já aplicada no banco local de lá); no servidor o registro
+  de controle do Prisma foi renomeado (mesmo schema). `companyName` passou a opcional
+  (`20260926120000_company_name_optional`) — antes todo provedor novo nascia "Vibe Telecom". Artigos padrão
+  da base: formato de id da outra linha (`<tenant>_kb_<slug>`), ids do servidor renomeados.
+- **Infra de teste:** `test-db.ts`/`global-setup.ts` (outra linha) com as travas da revisão (recusa banco
+  que não termine em `_test`, cria o banco se faltar). `verify.*` rodam em stack isolada (outra linha), então
+  a trava `ISPAGENT_VERIFY_ALLOW_DESTROY` saiu. CI une as duas: tipos, testes, build, auditoria, migrations
+  cobrindo o schema e verificação de ponta a ponta.
+- **Front-end:** `NEXT_PUBLIC_API_URL` vazio = mesmo host da página (a outra linha fixava `localhost:3001`,
+  o que quebra o acesso por IP público).

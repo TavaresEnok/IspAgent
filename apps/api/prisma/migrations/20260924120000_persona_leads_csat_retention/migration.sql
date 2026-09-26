@@ -1,17 +1,17 @@
 -- AlterTable
+ALTER TABLE "conversations" ADD COLUMN     "summary" TEXT;
+
+-- AlterTable
+ALTER TABLE "handoffs" ADD COLUMN     "department" TEXT NOT NULL DEFAULT 'SUPORTE_TECNICO';
+
+-- AlterTable
 ALTER TABLE "tenant_policy_configs" ADD COLUMN     "assistantName" TEXT NOT NULL DEFAULT 'Assistente Virtual',
-ADD COLUMN     "companyName" TEXT,
+ADD COLUMN     "companyName" TEXT NOT NULL DEFAULT 'Vibe Telecom',
 ADD COLUMN     "customRules" TEXT,
 ADD COLUMN     "readOnlyMode" BOOLEAN NOT NULL DEFAULT true,
 ADD COLUMN     "supportHours" TEXT DEFAULT 'Segunda a Sexta, 08h às 18h',
 ADD COLUMN     "tone" TEXT NOT NULL DEFAULT 'caloroso, educado, empático e resolutivo (2 a 4 frases)',
 ALTER COLUMN "canCreateTicket" SET DEFAULT false;
-
--- AlterTable
-ALTER TABLE "conversations" ADD COLUMN     "summary" TEXT;
-
--- AlterTable
-ALTER TABLE "handoffs" ADD COLUMN     "department" TEXT NOT NULL DEFAULT 'SUPORTE_TECNICO';
 
 -- CreateTable
 CREATE TABLE "cancellation_requests" (
@@ -93,4 +93,3 @@ ALTER TABLE "satisfaction_surveys" ADD CONSTRAINT "satisfaction_surveys_tenantId
 
 -- AddForeignKey
 ALTER TABLE "satisfaction_surveys" ADD CONSTRAINT "satisfaction_surveys_conversationId_fkey" FOREIGN KEY ("conversationId") REFERENCES "conversations"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-

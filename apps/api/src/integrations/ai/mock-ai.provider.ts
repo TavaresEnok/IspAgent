@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { Intent } from '@ispagent/shared';
-import { AIProvider, ComposeReplyInput, IntentClassification, ReceiptAnalysisResult } from './ai-provider.interface';
+import { AIProvider, ComposeReplyInput, IntentClassification } from './ai-provider.interface';
 
 export const KEYWORD_RULES: Array<{ intent: Intent; keywords: string[] }> = [
   { intent: 'SEM_CONEXAO', keywords: ['sem internet', 'sem conexão', 'sem conexao', 'caiu a internet', 'não conecta', 'nao conecta', 'sem sinal', 'caiu a rede', 'não está funcionando'] },
   { intent: 'INTERNET_LENTA', keywords: ['lenta', 'lentidão', 'lentidao', 'devagar', 'travando', 'ruim', 'internet ruim', 'sinal ruim', 'internet pessima', 'conexao ruim', 'velocidade baixa', 'muito lento', 'muito lenta'] },
-  { intent: 'QUEDAS', keywords: ['cai toda hora', 'caindo', 'caiu de novo', 'fica caindo', 'oscilando', 'oscilação', 'oscilacao', 'quedas', 'reconectando', 'instável', 'instavel'] },
+  { intent: 'QUEDAS', keywords: ['cai toda hora', 'caindo', 'caiu de novo', 'fica caindo', 'desconectando', 'oscilando', 'oscilação', 'oscilacao', 'quedas', 'reconectando', 'instável', 'instavel'] },
   { intent: 'SEGUNDA_VIA', keywords: ['segunda via', '2 via', '2ª via', 'boleto', 'pdf', 'baixar boleto', 'baixar fatura', 'copia do boleto', 'link do boleto', 'quero o pdf', 'link pdf', 'gerar pdf', 'sem ser o link', 'pdf do boleto', 'outras solicitações', 'outras solicitacoes', 'minhas solicitações', 'minhas solicitacoes'] },
   { intent: 'PAGAMENTO', keywords: ['paguei', 'pagamento', 'comprovante', 'pix', 'chave pix', 'codigo pix', 'código pix', 'pagar', 'copia e cola', 'gere o código pix', 'gerar pix', 'eu pedi o pix', 'pedi o pix', 'qrcode', 'qr code', 'qrcod', 'cade o pix', 'cadê o pix'] },
   { intent: 'PLANO', keywords: ['meu plano', 'qual plano', 'plano contratado', 'saber meu plano', 'saber o meu plano', 'consultar plano', 'meu pacote', 'qual a velocidade do meu plano', 'velocidade do meu plano', 'valor do plano', 'valor do meu plano', 'preço do plano', 'preco do plano', 'quanto pago']  },
@@ -54,6 +54,11 @@ export class MockAIProvider implements AIProvider {
           matched.push(rule.intent);
         }
       }
+    }
+    // SUPORTE_INTERNET é o fallback genérico ("internet", "conexão"): não conta como segundo assunto.
+    const specific = matched.filter((i) => i !== 'SUPORTE_INTERNET');
+    if (specific.length > 0) {
+      return { intents: specific, primary: specific[0], confidence: 'MEDIUM' };
     }
     if (matched.length > 0) {
       return { intents: matched, primary: matched[0], confidence: 'MEDIUM' };
@@ -217,9 +222,9 @@ export class MockAIProvider implements AIProvider {
       case 'DEGRADED':
         return 'verifiquei a sua conexão e detectei uma oscilação no sinal da fibra que chega até você — isso explica as quedas e não se resolve reiniciando o roteador.' + (canTicket ? ' Quer que eu abra um chamado para um técnico verificar?' : '');
       case 'CRITICAL':
-        return 'verifiquei a sua conexão e ela está com um problema sério no sinal da fibra.' + (canTicket ? ' Recomendo a visita de um técnico — posso abrir o chamado agora?' : ' Vou precisar que a nossa equipe técnica verifique.');
+        return 'verifiquei a sua conexão e o sinal que chega até você está bem abaixo do ideal, o que explica as quedas.' + (canTicket ? ' Quer que eu abra um chamado técnico para verificarmos?' : ' Vou precisar que a nossa equipe técnica verifique.');
       case 'OFFLINE':
-        return 'verifiquei aqui que o seu equipamento está sem comunicação com a central no momento. Verifique se o cabo óptico e a fonte de energia estão firmes.';
+        return 'verifiquei aqui que o seu equipamento está sem comunicação com a central no momento. Verifique se o cabo óptico e a fonte de energia estão firmes.' + (canTicket ? ' Se estiver tudo certo, quer que eu abra um chamado técnico?' : '');
       default:
         return 'verifiquei as informações da sua conexão.';
     }
@@ -230,15 +235,4 @@ export class MockAIProvider implements AIProvider {
     if (value === null) return 'não informado';
     return String(value);
   }
-
-  /** Sem IA real não há transcrição: lançar faz o canal responder "não consegui ouvir", nunca inventar a fala. */
-  async transcribeAudio(_audioBase64: string, _mimeType = 'audio/ogg'): Promise<string> {
-    throw new Error('Transcrição de áudio indisponível sem um provedor de IA real configurado.');
-  }
-
-  /** Sem IA real não há leitura de comprovante: nunca declarar um comprovante válido por padrão. */
-  async analyzeReceipt(_fileBase64: string, _mimeType = 'image/jpeg'): Promise<ReceiptAnalysisResult> {
-    return { isValid: false, notes: 'Leitura automática de comprovante indisponível no modo DEMO — um atendente vai conferir.' };
-  }
-
 }

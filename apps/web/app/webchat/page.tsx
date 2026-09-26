@@ -141,6 +141,7 @@ export default function WebChatPage() {
   const [unavailable, setUnavailable] = useState(false);
   const [tenantId, setTenantId] = useState(TENANT_ID);
   const [session, setSession] = useState('');
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [isStaff, setIsStaff] = useState(false);
   const [started, setStarted] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -183,6 +184,41 @@ export default function WebChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
 
+  // Tempo real: mensagens novas desta conversa (ex.: resposta do atendente humano) chegam sem recarregar,
+  // e o encerramento por inatividade abre a avaliação. O token de sessão vai na query (EventSource não
+  // envia header); é o HMAC da própria conversa, não uma credencial de staff.
+  useEffect(() => {
+    if (!started || !session || !conversationId) return;
+    const token = readToken(tenantId, session);
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const es = new EventSource(`${API_URL}/public/webchat/${tenantId}/conversation/${encodeURIComponent(session)}/stream${qs}`);
+    es.onmessage = (event) => {
+      let parsed: { type?: string; payload?: { message?: Message; status?: string } } | null = null;
+      try {
+        parsed = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (parsed?.type === 'STATUS_CHANGED' && parsed.payload?.status) {
+        setConversationStatus(parsed.payload.status);
+        if (parsed.payload.status === 'CLOSED') setShowSurvey((open) => open || !surveySubmitted);
+        return;
+      }
+      const incoming = parsed?.payload?.message;
+      if (!incoming?.id) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === incoming.id)) return prev;
+        // A mensagem que o próprio cliente acabou de enviar volta pelo stream: substitui a temporária.
+        const tempIdx = prev.findIndex((m) => m.id.startsWith('temp_') && m.role === incoming.role && m.content === incoming.content);
+        if (tempIdx >= 0) return prev.map((m, i) => (i === tempIdx ? incoming : m));
+        return [...prev, incoming];
+      });
+      if (incoming.role === 'HUMAN') setConversationStatus('HUMAN_ACTIVE');
+    };
+    return () => es.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, session, tenantId, conversationId]);
+
   useEffect(() => {
     setIsStaff(Boolean(getAccessToken()));
     fetch(`${API_URL}/public/webchat/config`)
@@ -214,8 +250,13 @@ export default function WebChatPage() {
   }, []);
 
   /** Aplica a resposta de qualquer rota do chat: mensagens, status e (em produção) token da sessão. */
-  function applyChatResponse(data: { messages?: Message[]; status?: string; sessionToken?: string }, tenant = tenantId, id = session) {
+  function applyChatResponse(
+    data: { messages?: Message[]; status?: string; sessionToken?: string; conversationId?: string | null },
+    tenant = tenantId,
+    id = session,
+  ) {
     if (data.sessionToken) storeToken(tenant, id, data.sessionToken);
+    if (data.conversationId) setConversationId(data.conversationId);
     if (data.messages) setMessages(data.messages);
     if (data.status) setConversationStatus(data.status);
   }
@@ -233,6 +274,7 @@ export default function WebChatPage() {
       const data = await res.json();
       setMessages(data.messages || []);
       setConversationStatus(data.status);
+      setConversationId(data.conversationId ?? null);
       setStarted(true);
       void checkIncident(id, tenant);
     } catch (e) {
@@ -322,6 +364,7 @@ export default function WebChatPage() {
   }
 
   function startNewSession() {
+    setConversationId(null);
     setMessages([]);
     setConversationStatus(null);
     setInput('');

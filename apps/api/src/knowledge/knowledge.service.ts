@@ -19,8 +19,6 @@ export interface KnowledgeSearchResult {
  * operações de modelo, não SQL cru) — o filtro `"tenantId" = ${tenantId}` abaixo é manual e
  * obrigatório, não opcional. Sem ele, esta seria a única brecha de isolamento entre tenants do sistema.
  */
-
-
 @Injectable()
 export class KnowledgeService {
   constructor(private readonly db: TenantPrismaService) {}
@@ -29,45 +27,35 @@ export class KnowledgeService {
     const tenantId = currentTenantId();
     if (!tenantId) throw new Error('[KnowledgeService] busca requer contexto de tenant ativo.');
 
-    // 1ª passada: a frase do cliente como veio (todas as palavras precisam aparecer — mais precisa).
-    const rows = await this.db.client.$queryRaw<KnowledgeSearchResult[]>(Prisma.sql`
-      SELECT id, title, content, source,
-        ts_rank(to_tsvector('portuguese', title || ' ' || content), plainto_tsquery('portuguese', ${query})) AS rank
-      FROM knowledge_documents
-      WHERE "tenantId" = ${tenantId}
-        AND to_tsvector('portuguese', title || ' ' || content) @@ plainto_tsquery('portuguese', ${query})
-      ORDER BY rank DESC
-      LIMIT ${limit}
-    `);
+    const synonyms = this.synonymsFor(query);
 
-    // 2ª passada (só se faltou resultado): sinônimos do suporte técnico somados com OU. Antes os termos
-    // extras entravam no mesmo `plainto_tsquery`, que exige TODOS — e o documento certo sumia.
-    const expansion = this.expansionTerms(query);
-    if (rows.length >= limit || expansion.length === 0) return rows;
-
-    const orQuery = expansion.join(' | ');
-    const extra = await this.db.client.$queryRaw<KnowledgeSearchResult[]>(Prisma.sql`
-      SELECT id, title, content, source,
-        ts_rank(to_tsvector('portuguese', title || ' ' || content), to_tsquery('portuguese', ${orQuery})) AS rank
-      FROM knowledge_documents
-      WHERE "tenantId" = ${tenantId}
-        AND to_tsvector('portuguese', title || ' ' || content) @@ to_tsquery('portuguese', ${orQuery})
-      ORDER BY rank DESC
-      LIMIT ${limit}
-    `);
-    const seen = new Set(rows.map((r) => r.id));
-    return [...rows, ...extra.filter((r) => !seen.has(r.id))].slice(0, limit);
+    return this.db.client.$queryRaw<KnowledgeSearchResult[]>(Prisma.sql`
+        SELECT
+          id,
+          title,
+          content,
+          source,
+          ts_rank(
+            to_tsvector('portuguese', title || ' ' || content),
+            (plainto_tsquery('portuguese', ${query}) || websearch_to_tsquery('portuguese', ${synonyms}))
+          ) AS rank
+        FROM knowledge_documents
+        WHERE "tenantId" = ${tenantId}
+          AND to_tsvector('portuguese', title || ' ' || content) @@ (plainto_tsquery('portuguese', ${query}) || websearch_to_tsquery('portuguese', ${synonyms}))
+        ORDER BY rank DESC
+        LIMIT ${limit}
+      `);
   }
 
-  /** Termos técnicos relacionados ao que o cliente descreveu (só letras/dígitos: seguros para `to_tsquery`). */
-  private expansionTerms(q: string): string[] {
+  // Sinônimos entram como alternativas (OR): somá-los à consulta com AND faria o documento certo sumir.
+  private synonymsFor(q: string): string {
     const lower = q.toLowerCase();
-    const terms: string[] = [];
-    if (/\b(los|vermelh[ao]|luz)\b/.test(lower)) terms.push('los', 'alarme', 'fibra', 'rompimento');
-    if (/wi-?fi|alcance|sinal fraco/.test(lower)) terms.push('wifi', 'frequencia', 'paredes', 'roteador');
-    if (/reinici|reset|deslig|trav/.test(lower)) terms.push('reiniciar', 'tomada', 'roteador');
-    if (/\b(ping|lag|jog\w*|latencia|latência)\b/.test(lower)) terms.push('latencia', 'ping', 'jitter', 'cabo');
-    if (/velocidade|lent[ao]|medir|speed/.test(lower)) terms.push('velocidade', 'teste', 'cabo');
-    return [...new Set(terms)];
+    const groups: string[] = [];
+    if (/\blos\b|vermelh|\bluz/.test(lower)) groups.push('los fibra rompimento');
+    if (/wi-?fi|alcance|sinal fraco/.test(lower)) groups.push('wifi 5ghz roteador');
+    if (/reinici|reset|deslig|trava/.test(lower)) groups.push('reiniciar tomada');
+    if (/ping|lag|jog|lat[eê]ncia/.test(lower)) groups.push('latência ping jitter');
+    if (/velocidade|lent|medir|speed/.test(lower)) groups.push('velocidade lenta teste');
+    return groups.join(' ').split(' ').join(' or ');
   }
 }

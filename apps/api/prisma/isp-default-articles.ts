@@ -1,19 +1,4 @@
-/**
- * Artigos técnicos genéricos de suporte FTTH com que todo provedor começa na Base de Conhecimento. São
- * documentos NORMAIS do tenant (editáveis/removíveis na tela Base de Conhecimento), não um "fallback"
- * escondido no código: gravados pelo seed e, para tenants que já existiam, pela migration
- * 20260924130000_default_kb_articles. O id é `kbdef_<tenant>_<slug>` (idempotente).
- */
-export interface DefaultKbArticle {
-  slug: string;
-  title: string;
-  content: string;
-  source: string;
-}
-
-export const defaultKbArticleId = (tenantId: string, slug: string) => `kbdef_${tenantId}_${slug}`;
-
-export const DEFAULT_KB_ARTICLES: DefaultKbArticle[] = [
+export const ISP_DEFAULT_ARTICLES = [
   {
     slug: 'los_vermelha',
     title: 'Luz LOS vermelha na ONU / Rompimento de Fibra',

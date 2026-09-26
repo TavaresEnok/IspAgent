@@ -21,6 +21,16 @@ import { IdentityResolution, IdentityResolutionService, normalizeDocument } from
 import { MockAIProvider } from '../integrations/ai/mock-ai.provider';
 import { ComposeReplyInput } from '../integrations/ai/ai-provider.interface';
 import { checkReplyAgainstFacts } from './reply-guard';
+import {
+  CANCELLATION_REASON_QUESTION,
+  cancellationStep,
+  humanRequestReply,
+  isHumanRequest,
+  isScopeQuestion,
+  leadReply,
+  scopeReply,
+} from './quick-flows';
+import { isWithinSupportHours, offHoursNotice } from './support-hours';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
 
@@ -29,6 +39,17 @@ const ACCOUNT_INTENTS: Intent[] = [
 ];
 
 const NETWORK_INTENTS: Intent[] = ['SEM_CONEXAO', 'INTERNET_LENTA', 'QUEDAS', 'SUPORTE_INTERNET'];
+
+const MAX_IDENTIFICATION_ASKS = 2;
+
+/** Transferência fora do expediente: avisa quando a equipe volta em vez de deixar o cliente esperando. */
+function withOffHoursNotice(reply: string, supportHours: string | null | undefined): string {
+  if (!supportHours || isWithinSupportHours(supportHours) !== false) return reply;
+  return `${reply}\n\n${offHoursNotice(supportHours)}`;
+}
+
+const IDENTITY_HANDOFF_MESSAGE =
+  'Não consegui localizar o seu cadastro por aqui. Vou te passar para um atendente, que confirma os seus dados e continua o atendimento com você.';
 
 function pulseIspEnabled(): boolean {
   return process.env.ISPAGENT_PULSEISP_ENABLED === 'true';
@@ -73,8 +94,6 @@ const AFFIRMATIVE = /^\s*(sim|s|pode|pode sim|pode abrir|quero sim|claro|ok|okay
 const NEGATIVE = /^\s*(n[ãa]o|nao|n|agora n[ãa]o|obrigad[oa]|valeu|deixa|tudo bem)(?!\p{L})/iu;
 const FOLLOW_UP_WINDOW_MS = 3 * 60_000; // 3 minutos para perguntas imediatas de diagnóstico
 
-const HANDOFF_TRIGGER = /(?:atendente|humano|falar com (?:uma )?pessoa|falar com alguém|falar com alguem|falar com gente|suporte humano|muito burro|burro|você não ajuda|voce nao ajuda|não ajuda|nao ajuda|chama alguém|chama alguem|chamar atendente|passa pra alguém|passa pra alguem|atendimento humano|operador|falar com um atendente|quero um atendente)/i;
-const SCOPE_TRIGGER = /(?:o que voc[eê] pode fazer|o que voc[eê] faz|o que faz|quais (?:s[aã]o )?(?:as )?op[cç][oõ]es|menu|ajuda|listar|o que voc[eê] resolve|o que pode fazer por mim|quais os servi[cç]os)/i;
 const PENDING_BILLING_TRIGGER = /(?:outras solicita[cç][oõ]es|outra solicita[cç][aã]o|minhas solicita[cç][oõ]es|e o pix|e o pdf|e a fatura|e o boleto|cade o pix|cadê o pix|qrcod|qr code|qrcode|sem ser o link|pdf do boleto|eu pedi o pix|pedi o pix)/i;
 const CLARIFICATION_TRIGGER = /^(?:como assim|que sinal|por que|pq|que oscila[cç][aã]o|explica|n[aã]o entendi|como assim\??|que\??)\b/i;
 
@@ -226,102 +245,51 @@ export class AgentOrchestratorService {
       aiFailed = true;
     }
 
-    // 1. Pedido de atendimento humano ou cliente irritado: encaminhar de imediato para a fila humana
-    if (HANDOFF_TRIGGER.test(customerMessage)) {
-      const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
-      const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
-      const replyText = `${greeting}compreendo perfeitamente e peço desculpas. Estou transferindo o seu atendimento para um de nossos operadores humanos agora mesmo. Por favor, aguarde um instante que um atendente irá te responder por aqui.`;
+    const identifiedContractId =
+      identityResult.method === 'PHONE_EXACT' || identityResult.method === 'DOCUMENT'
+        ? identityResult.contractId
+        : null;
+    const identifiedCustomerId =
+      identityResult.method === 'PHONE_EXACT' || identityResult.method === 'DOCUMENT'
+        ? identityResult.customerId
+        : null;
+    const decisionIdentity: AgentDecision['identity'] =
+      identifiedCustomerId && identifiedContractId
+        ? {
+            customerId: identifiedCustomerId,
+            contractId: identifiedContractId,
+            method: identityResult.method,
+            confidence: identityResult.confidence,
+            resolvedAt: new Date().toISOString(),
+          }
+        : null;
+    const tenantPolicy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
+    const companyName = await this.companyName(tenantId, tenantPolicy?.companyName);
+    const quick = {
+      tenantId,
+      conversationId,
+      ai,
+      identity: decisionIdentity,
+      reportedProblem: customerMessage,
+      supportHours: tenantPolicy?.supportHours ?? null,
+    };
 
-      const agentRun = await this.db.client.agentRun.create({
-        data: {
-          tenantId,
-          conversationId,
-          intent: 'OUTRO',
-          intentConfidence: 'HIGH',
-          promptVersion: PROMPT_VERSION,
-          model: ai.model,
-          mode: ai.mode,
-          outcome: 'HANDOFF',
+    // 1. Pedido explícito de atendimento humano ou irritação: direto para a fila.
+    if (isHumanRequest(customerMessage)) {
+      return this.finishQuickTurn(quick, {
+        intent: 'OUTRO',
+        outcome: 'HANDOFF',
+        reply: humanRequestReply(customerName),
+        handoff: {
+          reason: 'Cliente solicitou atendimento humano ou expressou insatisfação.',
+          suggestedNextAction: 'Atendimento manual por operador.',
         },
       });
-
-      const identifiedContractId =
-        identityResult.method === 'PHONE_EXACT' || identityResult.method === 'DOCUMENT'
-          ? identityResult.contractId
-          : null;
-      const identifiedCustomerId =
-        identityResult.method === 'PHONE_EXACT' || identityResult.method === 'DOCUMENT'
-          ? identityResult.customerId
-          : null;
-
-      await this.handoff.createHandoff(conversationId, 'Cliente solicitou atendimento humano', {
-        intent: 'OUTRO',
-        reason: 'Cliente solicitou atendimento humano ou expressou insatisfação.',
-        reportedProblem: customerMessage,
-        customerId: identifiedCustomerId,
-        contractId: identifiedContractId,
-        toolsConsulted: [],
-        actionsTaken: [],
-        actionsFailed: [],
-        suggestedNextAction: 'Atendimento manual por operador.',
-      });
-
-      await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
-
-      return {
-        agentRunId: agentRun.id,
-        tenantId,
-        conversationId,
-        intent: 'OUTRO',
-        intentConfidence: 'HIGH',
-        identity: null,
-        toolCalls: [],
-        policyDecisions: [],
-        claims: [],
-        outcome: 'HANDOFF',
-        promptVersion: PROMPT_VERSION,
-        model: ai.model,
-        mode: ai.mode,
-      };
     }
 
-    // 2. Dúvida de escopo / o que o robô faz / ajuda — só quando a mensagem não traz um pedido concreto
-    // ("preciso de ajuda com a fatura" deve ir para a fatura, não para o menu).
-    if (!aiFailed && classification.intent === 'OUTRO' && SCOPE_TRIGGER.test(customerMessage)) {
-      const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
-      const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
-      const replyText = `${greeting}como assistente virtual da ${await this.companyName(tenantId)}, posso te ajudar com:\n\n• 📄 **2ª Via de Fatura e Boletos** (com PDF para download)\n• 📱 **Código PIX e QR Code** para pagamento rápido\n• 🌐 **Diagnóstico de Conexão e Teste de Sinal da Fibra**\n• 📦 **Consulta do seu Plano Contratado**\n• 👤 **Transferência para Atendente Humano**\n\nComo posso te ajudar agora?`;
-
-      const agentRun = await this.db.client.agentRun.create({
-        data: {
-          tenantId,
-          conversationId,
-          intent: 'OUTRO',
-          intentConfidence: 'HIGH',
-          promptVersion: PROMPT_VERSION,
-          model: ai.model,
-          mode: ai.mode,
-          outcome: 'ANSWERED',
-        },
-      });
-
-      await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
-
-      return {
-        agentRunId: agentRun.id,
-        tenantId,
-        conversationId,
-        intent: 'OUTRO',
-        intentConfidence: 'HIGH',
-        identity: null,
-        toolCalls: [],
-        policyDecisions: [],
-        claims: [],
-        outcome: 'ANSWERED',
-        promptVersion: PROMPT_VERSION,
-        model: ai.model,
-        mode: ai.mode,
-      };
+    // 2. "O que você faz?" sem nenhum assunto reconhecido: menu.
+    if (!aiFailed && isScopeQuestion(customerMessage, classification.intent)) {
+      return this.finishQuickTurn(quick, { intent: 'OUTRO', outcome: 'ANSWERED', reply: scopeReply(customerName, companyName) });
     }
 
     // 3. Solicitação pendente de cobrança / "e minhas outras solicitações?" / "pedi o pix" / "pdf sem ser link"
@@ -347,8 +315,16 @@ export class AgentOrchestratorService {
     // Continuação: "que sinal?", "sim", "não" logo depois de um diagnóstico de rede.
     let followUp = false;
     let declined = false;
-    const tenantPolicy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
     const canCreateTicket = !tenantPolicy?.readOnlyMode && Boolean(tenantPolicy?.canCreateTicket);
+
+    const lastAgentReply = await this.db.client.message.findFirst({
+      where: { conversationId, role: 'AGENT', createdAt: { gte: new Date(Date.now() - FOLLOW_UP_WINDOW_MS) } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const answeringCancellationReason = Boolean(lastAgentReply?.content.includes(CANCELLATION_REASON_QUESTION));
+    if (!aiFailed && answeringCancellationReason) {
+      classification = { intent: 'CANCELAMENTO', confidence: 'MEDIUM' };
+    }
 
     if (!aiFailed && classification.intent === 'OUTRO') {
       const since = new Date(Date.now() - FOLLOW_UP_WINDOW_MS);
@@ -385,64 +361,20 @@ export class AgentOrchestratorService {
       },
     });
 
-    const identifiedContractId =
-      identityResult.method === 'PHONE_EXACT' || identityResult.method === 'DOCUMENT'
-        ? identityResult.contractId
-        : null;
-    const identifiedCustomerId =
-      identityResult.method === 'PHONE_EXACT' || identityResult.method === 'DOCUMENT'
-        ? identityResult.customerId
-        : null;
-
     const policyDecisions: PolicyDecision[] = [];
     const toolResults: ToolResult[] = [];
 
     const accountAvailable = Boolean(identifiedContractId && identifiedCustomerId);
     const realPulseContract = isPulseId(identifiedContractId);
-    // Óptico do ERP: nunca para contrato do PulseISP (o ERP não conhece esse id) e nunca dado DEMO
-    // misturado num atendimento real.
     // Diagnóstico de rede de cliente real (PulseISP ou ERP) é dado LIVE na auditoria, nunca rotulado DEMO.
     const liveNetwork = realPulseContract || isErpContract(identifiedContractId);
-    const erpOpticalApplies = !realPulseContract && (this.erpTools.erp.mode === 'LIVE' || !pulseIspEnabled());
 
-    // 4. Fluxo de Retenção de Cancelamento
+    // 4. Cancelamento: pede o motivo uma vez e passa para a retenção humana (sem prometer condição).
     if (classification.intent === 'CANCELAMENTO') {
-      const company = await this.companyName(tenantId, tenantPolicy?.companyName);
-      const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
-      const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
-
-      // Verifica se o cliente já mencionou motivo financeiro/preço
-      // Se ainda não especificou motivo
-      const priceReason = /(?:caro|preço|preco|valor|aumentou|concorr[eê]ncia|desconto)/i.test(customerMessage);
-      const hasAnyReason =
-        priceReason || /(?:mudan[çc]a|mudei|endere[çc]o|ruim|lenta|inst[aá]vel|n[aã]o uso|viagem|vender)/i.test(customerMessage);
-      if (!hasAnyReason) {
-        const replyText = `${greeting}lamento muito pela sua intenção de cancelamento. Para que eu possa te orientar da melhor forma, você poderia me informar o motivo principal? (Por exemplo: valor da fatura, mudança de endereço ou instabilidade no sinal?)`;
-        await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
-
-        await this.db.client.agentRun.update({
-          where: { id: agentRun.id },
-          data: { outcome: 'ANSWERED' },
-        });
-
-        return {
-          agentRunId: agentRun.id,
-          tenantId,
-          conversationId,
-          intent: 'CANCELAMENTO',
-          intentConfidence: 'HIGH',
-          identity: null,
-          toolCalls: [],
-          policyDecisions: [],
-          claims: [],
-          outcome: 'ANSWERED',
-          promptVersion: PROMPT_VERSION,
-          model: ai.model,
-          mode: ai.mode,
-        };
+      const step = cancellationStep(customerMessage, customerName, answeringCancellationReason);
+      if (step.kind === 'ASK_REASON') {
+        return this.finishQuickTurn(quick, { agentRunId: agentRun.id, intent: 'CANCELAMENTO', outcome: 'ANSWERED', reply: step.reply });
       }
-
-      // Motivo informado e não é negociável -> registrar e transferir para retenção humana
       await this.db.client.cancellationRequest.create({
         data: {
           tenantId,
@@ -450,93 +382,53 @@ export class AgentOrchestratorService {
           customerId: identifiedCustomerId,
           contractId: identifiedContractId,
           reason: customerMessage,
-          // Motivo de preço: a retenção humana avalia uma condição especial (a IA não promete desconto).
-          discountOffered: priceReason,
+          discountOffered: step.priceRelated,
           status: 'TRANSFERRED',
         },
       });
-
-      await this.handoff.createHandoff(conversationId, 'Cancelamento de assinatura solicitado', {
-        intent: 'CANCELAMENTO',
-        reason: 'Cliente solicitou cancelamento da assinatura.',
-        reportedProblem: customerMessage,
-        customerId: identifiedCustomerId,
-        contractId: identifiedContractId,
-        toolsConsulted: [],
-        actionsTaken: [],
-        actionsFailed: [],
-        suggestedNextAction: 'Equipe de retenção humana para conclusão do cancelamento.',
-      });
-
-      const replyText = priceReason
-        ? `${greeting}compreendo perfeitamente o seu ponto — você é muito importante para a ${company}. Registrei o seu pedido e estou passando agora para a nossa equipe de retenção, que pode avaliar uma condição especial para você. Por favor, aguarde um instante.`
-        : `${greeting}compreendo perfeitamente. Registrei os detalhes do seu pedido e estou transferindo agora para a nossa equipe especializada de retenção humana para te auxiliar no processo. Por favor, aguarde um instante.`;
-      await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
-
-      await this.db.client.agentRun.update({
-        where: { id: agentRun.id },
-        data: { outcome: 'HANDOFF' },
-      });
-
-      return {
+      return this.finishQuickTurn(quick, {
         agentRunId: agentRun.id,
-        tenantId,
-        conversationId,
         intent: 'CANCELAMENTO',
-        intentConfidence: 'HIGH',
-        identity: null,
-        toolCalls: [],
-        policyDecisions: [],
-        claims: [],
         outcome: 'HANDOFF',
-        promptVersion: PROMPT_VERSION,
-        model: ai.model,
-        mode: ai.mode,
-      };
+        reply: step.reply,
+        handoff: { reason: 'Cliente solicitou cancelamento da assinatura.', suggestedNextAction: step.nextAction },
+      });
     }
 
-    // 5. Fluxo Comercial de Contratação & Upgrade (Captura de Lead)
+    // 5. Contratação/upgrade: um lead em aberto por contato (mensagens seguintes viram anotação nele).
     if (classification.intent === 'CONTRATACAO' || classification.intent === 'UPGRADE') {
-      const company = await this.companyName(tenantId, tenantPolicy?.companyName);
-      const firstName = customerName ? customerName.trim().split(/\s+/)[0] : '';
-      const greeting = firstName ? `${firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase()}, ` : '';
-      const channelPhone = /^\+?\d{10,13}$/.test(conversationRecord.channelUserId) ? conversationRecord.channelUserId : null;
-
-      await this.db.client.commercialLead.create({
-        data: {
-          tenantId,
-          name: customerName || 'Interessado via Chat',
-          phone: channelPhone ?? 'Não informado (Web Chat)',
-          desiredPlan: classification.intent === 'UPGRADE' ? 'Upgrade de Velocidade' : 'Novo Plano Fibra Óptica',
-          originChannel: 'WEBCHAT',
-          status: 'NEW',
-          notes: customerMessage,
-        },
+      // No Web Chat o id do canal é uma sessão aleatória, não telefone: o lead fica marcado sem telefone
+      // (e continua único por sessão, para as mensagens seguintes virarem anotação nele).
+      const channelId = conversationRecord.channelUserId;
+      const phone = /^\+?\d{10,13}$/.test(channelId) ? channelId : `sem telefone (web chat …${channelId.slice(-6)})`;
+      const existingLead = await this.db.client.commercialLead.findFirst({
+        where: { phone, status: 'NEW' },
+        orderBy: { createdAt: 'desc' },
       });
-
-      const replyText = `${greeting}ótima escolha! Já registrei o seu interesse com a nossa equipe comercial da ${company}. Um consultor vai entrar em contato com você pelo telefone/WhatsApp em breve com as melhores promoções disponíveis na sua região para finalizar o seu pedido! Se precisar de mais alguma informação sobre planos ou faturas, estou à disposição.`;
-      await this.conversation.appendMessage(conversationId, 'AGENT', replyText);
-
-      await this.db.client.agentRun.update({
-        where: { id: agentRun.id },
-        data: { outcome: 'ACTION_EXECUTED' },
-      });
-
-      return {
+      if (existingLead) {
+        await this.db.client.commercialLead.update({
+          where: { id: existingLead.id },
+          data: { notes: [existingLead.notes, customerMessage].filter(Boolean).join('\n') },
+        });
+      } else {
+        await this.db.client.commercialLead.create({
+          data: {
+            tenantId,
+            name: customerName || 'Interessado via chat',
+            phone,
+            desiredPlan: classification.intent === 'UPGRADE' ? 'Upgrade de velocidade' : 'Novo plano',
+            originChannel: conversationRecord.channel,
+            status: 'NEW',
+            notes: customerMessage,
+          },
+        });
+      }
+      return this.finishQuickTurn(quick, {
         agentRunId: agentRun.id,
-        tenantId,
-        conversationId,
         intent: classification.intent,
-        intentConfidence: 'HIGH',
-        identity: null,
-        toolCalls: [],
-        policyDecisions: [],
-        claims: [],
         outcome: 'ACTION_EXECUTED',
-        promptVersion: PROMPT_VERSION,
-        model: ai.model,
-        mode: ai.mode,
-      };
+        reply: leadReply(customerName, companyName, Boolean(existingLead)),
+      });
     }
 
     const hasNetwork = detectedIntents.some((it) => NETWORK_INTENTS.includes(it));
@@ -559,41 +451,42 @@ export class AgentOrchestratorService {
     // Cliente conhecido mas sem UM contrato ativo inequívoco: perguntar CPF de novo não resolve (loop) —
     // um atendente confirma o contrato.
     const contractUnresolved = !accountAvailable && identifiedCustomerId !== null && needsAccountOrNetwork;
-    const needsCpf =
+    const wantsIdentification =
       !identityLocked &&
       !contractUnresolved &&
       !accountAvailable &&
       (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
+    // Já pedimos o documento duas vezes sem conseguir identificar: para de insistir e passa para um atendente.
+    const cpfAsks = recentAgentReplies.filter((m) => /cpf|cnpj/i.test(m.content)).length;
+    const identityExhausted = wantsIdentification && cpfAsks >= MAX_IDENTIFICATION_ASKS;
+    const needsCpf = wantsIdentification && !identityExhausted;
 
     // Se a classificação falhou, não escolhemos ferramenta nenhuma a partir dela — `toolResults`/
     // `policyDecisions` ficam vazios e o turno vai direto pro caminho de HANDOFF abaixo.
-    if (declined || identityLocked || contractUnresolved) {
+    if (declined || identityLocked || contractUnresolved || identityExhausted) {
       // nada a consultar — só encerra a oferta / a identidade não está confirmada (vira handoff abaixo)
     } else if (needsCpf) {
       // Cliente ainda não identificado: não faz busca de KB inútil nem gera handoff.
       // O bot vai solicitar ou reiterar a necessidade do CPF para poder dar prosseguimento.
     } else if (!aiFailed && accountAvailable && hasNetwork && hasAccount) {
-      // Cenário Multi-Intent: executa diagnóstico de rede, sinal óptico e consulta de fatura/conta
-      const pulseTool = liveNetwork ? this.pulseIspLiveTool : this.pulseIspTool;
-      const decisionPulse = await this.policy.evaluate(pulseTool.action);
-      policyDecisions.push(decisionPulse);
-      toolResults.push(
-        await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
-      );
-
-      // Leitura da potência óptica da fibra (dBm / PON) pelo ERP — só para contrato do próprio ERP
-      // (`erpOpticalApplies`): cliente real do PulseISP já traz o óptico do PulseISP.
-      const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
-      policyDecisions.push(opticalDecision);
-      if (opticalDecision.allowed && erpOpticalApplies) {
+      // Cenário Multi-Intent: diagnóstico de rede (PulseISP ou base de conhecimento) + consulta de conta
+      if (pulseIspEnabled() || realPulseContract) {
+        const pulseTool = liveNetwork ? this.pulseIspLiveTool : this.pulseIspTool;
+        const decisionPulse = await this.policy.evaluate(pulseTool.action);
+        policyDecisions.push(decisionPulse);
         toolResults.push(
-          await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+          await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
         );
+      } else {
+        const kbTool = createKnowledgeSearchTool(this.knowledgeService);
+        const decisionKb = await this.policy.evaluate(kbTool.action);
+        policyDecisions.push(decisionKb);
+        toolResults.push(await this.executor.run(kbTool, { query: customerMessage }, { agentRunId: agentRun.id }));
       }
 
       // Desbloqueio em confiança se solicitado
       const isUnlockRequest = /(?:desbloque|libera|libera[cç][aã]o|confian[cç]a|j[aá] paguei|promessa|comprovante)/i.test(customerMessage);
-      if (isUnlockRequest) {
+      if (isUnlockRequest && !realPulseContract) {
         const unlockDecision = await this.policy.evaluate(this.erpTools.promiseToPayTool.action);
         policyDecisions.push(unlockDecision);
         if (unlockDecision.allowed) {
@@ -619,7 +512,7 @@ export class AgentOrchestratorService {
       }
     } else if (!aiFailed && accountAvailable && ACCOUNT_INTENTS.includes(classification.intent)) {
       const isUnlockRequest = /(?:desbloque|libera|libera[cç][aã]o|confian[cç]a|j[aá] paguei|promessa|comprovante)/i.test(customerMessage);
-      if (isUnlockRequest || classification.intent === 'BLOQUEIO') {
+      if ((isUnlockRequest || classification.intent === 'BLOQUEIO') && !realPulseContract) {
         const unlockDecision = await this.policy.evaluate(this.erpTools.promiseToPayTool.action);
         policyDecisions.push(unlockDecision);
         if (unlockDecision.allowed) {
@@ -654,24 +547,22 @@ export class AgentOrchestratorService {
         toolResults.push(
           await this.executor.run(pulseTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
         );
-      }
-
-      // Leitura da potência óptica da fibra (dBm / PON) pelo ERP — só para contrato do próprio ERP
-      // (`erpOpticalApplies`): cliente real do PulseISP já traz o óptico do PulseISP.
-      const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
-      policyDecisions.push(opticalDecision);
-      if (opticalDecision.allowed && erpOpticalApplies) {
-        toolResults.push(
-          await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
-        );
-      }
-
-      // Se não houver PulseISP ou faltar contexto, agrega busca na base de conhecimento
-      if (!pulseIspEnabled() && !realPulseContract) {
+      } else {
+        // Sem PulseISP: a base de conhecimento é a resposta principal; a leitura da ONU pelo ERP (quando o
+        // ERP a fornece) entra como complemento. Com PulseISP ela não roda: o diagnóstico já traz o sinal
+        // óptico, e duas fontes no mesmo turno chegaram a se contradizer.
         const kbTool = createKnowledgeSearchTool(this.knowledgeService);
         const decisionKb = await this.policy.evaluate(kbTool.action);
         policyDecisions.push(decisionKb);
         toolResults.push(await this.executor.run(kbTool, { query: customerMessage }, { agentRunId: agentRun.id }));
+
+        const opticalDecision = await this.policy.evaluate(this.erpTools.opticalSignalTool.action);
+        policyDecisions.push(opticalDecision);
+        if (opticalDecision.allowed) {
+          toolResults.push(
+            await this.executor.run(this.erpTools.opticalSignalTool, { contractId: identifiedContractId as string }, { agentRunId: agentRun.id }),
+          );
+        }
       }
     } else if (!aiFailed && !declined) {
       const kbTool = createKnowledgeSearchTool(this.knowledgeService);
@@ -685,7 +576,7 @@ export class AgentOrchestratorService {
     let outcome: AgentDecision['outcome'];
     if (declined) {
       outcome = 'ANSWERED';
-    } else if (identityLocked || contractUnresolved) {
+    } else if (identityLocked || contractUnresolved || identityExhausted) {
       outcome = 'HANDOFF';
     } else if (needsCpf) {
       outcome = 'ANSWERED';
@@ -705,13 +596,16 @@ export class AgentOrchestratorService {
     }
 
     if (outcome === 'HANDOFF') {
+      // Nos transbordos por identidade a última fala costuma ser só o documento: o atendente precisa do pedido.
+      const reportedProblem =
+        identityLocked || identityExhausted ? await this.lastCustomerRequest(conversationId, customerMessage) : customerMessage;
       const summary = identityLocked
         ? {
             reason: 'Identidade do cliente não confirmada: várias tentativas de documento sem correspondência.',
             customerId: null,
             contractId: null,
             intent: classification.intent,
-            reportedProblem: customerMessage,
+            reportedProblem,
             toolsConsulted: [],
             actionsTaken: [],
             actionsFailed: [],
@@ -741,7 +635,13 @@ export class AgentOrchestratorService {
             actionsFailed: [],
             suggestedNextAction: 'Ler a mensagem original do cliente (a IA não conseguiu processá-la) e responder manualmente.',
           }
-        : this.buildHandoffSummary(classification.intent, identifiedCustomerId, identifiedContractId, customerMessage, toolResults);
+        : identityExhausted
+          ? {
+              ...this.buildHandoffSummary(classification.intent, identifiedCustomerId, identifiedContractId, reportedProblem, toolResults),
+              reason: 'Não foi possível identificar o cliente: o documento foi pedido duas vezes sem localizar um cadastro único.',
+              suggestedNextAction: 'Confirmar a identidade do cliente (CPF/CNPJ do titular) e seguir com o pedido.',
+            }
+          : this.buildHandoffSummary(classification.intent, identifiedCustomerId, identifiedContractId, customerMessage, toolResults);
       await this.handoff.createHandoff(conversationId, summary.reason, summary);
     }
 
@@ -755,6 +655,8 @@ export class AgentOrchestratorService {
       replyText = AI_PROVIDER_FAILURE_MESSAGE;
     } else if (declined) {
       replyText = DECLINED_MESSAGE;
+    } else if (identityExhausted) {
+      replyText = IDENTITY_HANDOFF_MESSAGE;
     } else if (realPulseContract && toolResults.length === 0 && PULSE_HANDOFF_MESSAGE[classification.intent]) {
       replyText = PULSE_HANDOFF_MESSAGE[classification.intent] as string;
     } else if (classification.intent === 'OUTRO' && primaryResult?.status === 'NOT_FOUND' && ai.mode !== 'LIVE') {
@@ -826,12 +728,16 @@ export class AgentOrchestratorService {
       }
     }
 
+    if (outcome === 'HANDOFF') replyText = withOffHoursNotice(replyText, tenantPolicy?.supportHours);
     await this.conversation.appendMessage(conversationId, aiFailed ? 'SYSTEM' : 'AGENT', replyText);
 
     await this.db.client.agentRun.update({
       where: { id: agentRun.id },
       data: {
         outcome,
+        // A IA pode ter caído no meio do turno: registra quem respondeu de fato.
+        model: ai.model,
+        mode: ai.mode,
         claims: claims as unknown as object,
         policyDecisions: policyDecisions as unknown as object,
       },
@@ -843,16 +749,7 @@ export class AgentOrchestratorService {
       conversationId,
       intent: classification.intent,
       intentConfidence: classification.confidence,
-      identity:
-        identifiedCustomerId && identifiedContractId
-          ? {
-              customerId: identifiedCustomerId,
-              contractId: identifiedContractId,
-              method: identityResult.method,
-              confidence: identityResult.confidence,
-              resolvedAt: new Date().toISOString(),
-            }
-          : null,
+      identity: decisionIdentity,
       toolCalls: toolResults.map((r) => r.toolCallId),
       policyDecisions,
       claims,
@@ -863,7 +760,85 @@ export class AgentOrchestratorService {
     };
   }
 
+  /** Última fala do cliente que não é só um documento (o pedido de verdade), ou `fallback`. */
+  private async lastCustomerRequest(conversationId: string, fallback: string): Promise<string> {
+    const recent = await this.db.client.message.findMany({
+      where: { conversationId, role: 'CUSTOMER' },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+    });
+    const onlyDocument = /^\s*(?:(?:meu\s+)?(?:cpf|cnpj|documento)\s*(?:[ée]|:)?\s*)?[\d.\-/\s]{11,20}\s*$/i;
+    return recent.find((m) => !onlyDocument.test(m.content))?.content ?? fallback;
+  }
+
   /** Últimas falas (cliente/agente) antes da mensagem atual, mais antiga primeiro — contexto para a IA. */
+  /** Turno resolvido sem ferramenta: registra o AgentRun, abre handoff se for o caso e responde. */
+  private async finishQuickTurn(
+    ctx: {
+      tenantId: string;
+      conversationId: string;
+      ai: { model: string; mode: AgentDecision['mode'] };
+      identity: AgentDecision['identity'];
+      reportedProblem: string;
+      supportHours: string | null;
+    },
+    turn: {
+      intent: Intent;
+      outcome: AgentDecision['outcome'];
+      reply: string;
+      agentRunId?: string;
+      handoff?: { reason: string; suggestedNextAction: string };
+    },
+  ): Promise<AgentDecision> {
+    const agentRun = turn.agentRunId
+      ? await this.db.client.agentRun.update({ where: { id: turn.agentRunId }, data: { outcome: turn.outcome } })
+      : await this.db.client.agentRun.create({
+          data: {
+            tenantId: ctx.tenantId,
+            conversationId: ctx.conversationId,
+            intent: turn.intent,
+            intentConfidence: 'HIGH',
+            promptVersion: PROMPT_VERSION,
+            model: ctx.ai.model,
+            mode: ctx.ai.mode,
+            outcome: turn.outcome,
+          },
+        });
+
+    if (turn.handoff) {
+      await this.handoff.createHandoff(ctx.conversationId, turn.handoff.reason, {
+        intent: turn.intent,
+        reason: turn.handoff.reason,
+        reportedProblem: ctx.reportedProblem,
+        customerId: ctx.identity?.customerId ?? null,
+        contractId: ctx.identity?.contractId ?? null,
+        toolsConsulted: [],
+        actionsTaken: [],
+        actionsFailed: [],
+        suggestedNextAction: turn.handoff.suggestedNextAction,
+      });
+    }
+
+    const reply = turn.handoff ? withOffHoursNotice(turn.reply, ctx.supportHours) : turn.reply;
+    await this.conversation.appendMessage(ctx.conversationId, 'AGENT', reply);
+
+    return {
+      agentRunId: agentRun.id,
+      tenantId: ctx.tenantId,
+      conversationId: ctx.conversationId,
+      intent: turn.intent,
+      intentConfidence: agentRun.intentConfidence as AgentDecision['intentConfidence'],
+      identity: ctx.identity,
+      toolCalls: [],
+      policyDecisions: [],
+      claims: [],
+      outcome: turn.outcome,
+      promptVersion: PROMPT_VERSION,
+      model: ctx.ai.model,
+      mode: ctx.ai.mode,
+    };
+  }
+
   private async recentHistory(conversationId: string) {
     const rows = await this.db.client.message.findMany({
       where: { conversationId, role: { in: ['CUSTOMER', 'AGENT'] } },
