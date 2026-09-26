@@ -84,6 +84,10 @@ export class MockAIProvider implements AIProvider {
     }
 
     if (input.intent === 'OUTRO' && input.facts.length === 0) {
+      // Conversa em andamento com cliente identificado: sem novo "Olá, sou o assistente".
+      if (firstName) {
+        return `${greeting}estou por aqui com o seu cadastro aberto. Posso te ajudar com fatura e 2ª via, código PIX, o seu plano ou a sua conexão — é só me dizer o que precisa.`;
+      }
       return `Olá! Sou o ${assistant} da ${company}. Consigo te ajudar com faturas, 2ª via em PDF, código PIX para pagamento, consulta de plano e diagnóstico de conexão. Como posso te ajudar agora?`;
     }
     if (input.toolStatus === 'NOT_FOUND') {

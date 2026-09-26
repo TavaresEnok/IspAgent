@@ -24,7 +24,17 @@ import { checkReplyAgainstFacts } from './reply-guard';
 import {
   CANCELLATION_REASON_QUESTION,
   cancellationStep,
+  deniesIdentity,
+  documentPurposeReply,
+  documentRefusalReply,
+  humanRefusalReply,
   humanRequestReply,
+  identifiedReply,
+  identityDeniedReply,
+  isComplaintAboutReply,
+  isDocumentPurposeQuestion,
+  isDocumentRefusal,
+  isHumanRefusal,
   isHumanRequest,
   isScopeQuestion,
   leadReply,
@@ -50,6 +60,17 @@ function withOffHoursNotice(reply: string, supportHours: string | null | undefin
 
 const IDENTITY_HANDOFF_MESSAGE =
   'Não consegui localizar o seu cadastro por aqui. Vou te passar para um atendente, que confirma os seus dados e continua o atendimento com você.';
+
+// Cliente não mandou documento nenhum: dizer "não localizei o seu cadastro" seria falso.
+const IDENTITY_HANDOFF_NO_DOCUMENT_MESSAGE =
+  'Sem o CPF ou CNPJ do titular eu não consigo acessar a sua conta por aqui. Vou te passar para um atendente, que confirma os seus dados de outra forma e continua o atendimento com você.';
+
+/** CPF/CNPJ completo digitado na mensagem (só dígitos), ou `null`. */
+function extractDocument(message: string): string | null {
+  const match =
+    message.match(/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/) || message.match(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/);
+  return match ? normalizeDocument(match[0]) : null;
+}
 
 function pulseIspEnabled(): boolean {
   return process.env.ISPAGENT_PULSEISP_ENABLED === 'true';
@@ -182,6 +203,29 @@ export class AgentOrchestratorService {
     let justIdentified = false;
     let attemptedTerm: string | null = null;
     let identityLocked = false;
+    let identitySwitched = false;
+    let identityDenied = false;
+
+    // Conversa já vinculada, mas o cliente diz "não sou o Fulano" ou manda OUTRO documento ("mandei o CPF
+    // errado, o certo é..."): a conversa não pode continuar presa ao primeiro cadastro. Desvincula e, se
+    // veio documento, ele passa pela mesma identificação (mesmas regras e mesmo limite de tentativas).
+    if ('customerId' in identityResult && identityResult.customerId) {
+      const linked = await this.db.client.customer.findUnique({
+        where: { id: identityResult.customerId },
+        select: { name: true, document: true },
+      });
+      const typedDocument = extractDocument(customerMessage);
+      const otherDocument = typedDocument !== null && typedDocument !== normalizeDocument(linked?.document ?? '');
+      if (otherDocument || deniesIdentity(customerMessage, linked?.name ?? null)) {
+        await this.db.client.conversation.update({
+          where: { id: conversationId },
+          data: { customerId: null, contractId: null, identityMethod: 'NOT_FOUND', identityConfidence: 'LOW' },
+        });
+        identityResult = { method: 'NOT_FOUND', confidence: 'LOW' };
+        identitySwitched = otherDocument;
+        identityDenied = !otherDocument;
+      }
+    }
 
     const hasCustomer = 'customerId' in identityResult && Boolean(identityResult.customerId);
 
@@ -274,6 +318,27 @@ export class AgentOrchestratorService {
       supportHours: tenantPolicy?.supportHours ?? null,
     };
 
+    // 0. Identidade negada ("não sou o Fulano"): já desvinculado acima, pede o documento certo.
+    if (identityDenied) {
+      return this.finishQuickTurn(quick, { intent: 'OUTRO', outcome: 'ANSWERED', reply: identityDeniedReply() });
+    }
+
+    // "Não quero falar com atendente" — o contrário de pedir transferência.
+    if (isHumanRefusal(customerMessage)) {
+      return this.finishQuickTurn(quick, { intent: 'OUTRO', outcome: 'ANSWERED', reply: humanRefusalReply(customerName) });
+    }
+
+    // Cliente ainda sem cadastro perguntando por que precisa do CPF, ou preferindo não informar: explica e
+    // segue. Não é tentativa de identificação e não conta para o limite de pedidos de documento.
+    if (!decisionIdentity && !extractDocument(customerMessage)) {
+      if (isDocumentPurposeQuestion(customerMessage)) {
+        return this.finishQuickTurn(quick, { intent: 'OUTRO', outcome: 'ANSWERED', reply: documentPurposeReply(companyName) });
+      }
+      if (isDocumentRefusal(customerMessage) && (await this.lastAgentAskedDocument(conversationId))) {
+        return this.finishQuickTurn(quick, { intent: 'OUTRO', outcome: 'ANSWERED', reply: documentRefusalReply() });
+      }
+    }
+
     // 1. Pedido explícito de atendimento humano ou irritação: direto para a fila.
     if (isHumanRequest(customerMessage)) {
       return this.finishQuickTurn(quick, {
@@ -297,9 +362,21 @@ export class AgentOrchestratorService {
       classification = { intent: 'SEGUNDA_VIA', confidence: 'HIGH' };
     }
 
+    // "Eu nem pedi boleto", "não mencionei pagamento": reclamação da resposta anterior, não um pedido — a
+    // palavra-chave ali não pode disparar a consulta de novo.
+    if (isComplaintAboutReply(customerMessage)) {
+      classification = { intent: 'OUTRO', confidence: 'HIGH' };
+      detectedIntents = ['OUTRO'];
+    }
+
     // Se o cliente acabou de se identificar dinamicamente (ex.: enviou o CPF/código agora),
     // recuperar a intenção que estava pendente da conversa se a fala atual foi classificada como OUTRO/SUPORTE.
-    if (justIdentified && (classification.intent === 'OUTRO' || classification.intent === 'SUPORTE_INTERNET')) {
+    // Não vale na troca de documento: o pedido anterior era do outro cadastro (e costuma ser a reclamação).
+    if (
+      justIdentified &&
+      !identitySwitched &&
+      (classification.intent === 'OUTRO' || classification.intent === 'SUPORTE_INTERNET')
+    ) {
       const lastMeaningfulRun = await this.db.client.agentRun.findFirst({
         where: {
           conversationId,
@@ -310,6 +387,16 @@ export class AgentOrchestratorService {
       if (lastMeaningfulRun) {
         classification = { intent: lastMeaningfulRun.intent as Intent, confidence: 'HIGH' };
       }
+    }
+
+    // Acabou de se identificar sem pedido pendente: confirma o cadastro e pergunta o assunto. Deixar isso
+    // para a busca na base de conhecimento fazia o LLM ler "não encontrado" e dizer que o cadastro não existia.
+    if (justIdentified && classification.intent === 'OUTRO') {
+      return this.finishQuickTurn(quick, {
+        intent: 'OUTRO',
+        outcome: 'ANSWERED',
+        reply: identifiedReply(customerName, identitySwitched),
+      });
     }
 
     // Continuação: "que sinal?", "sim", "não" logo depois de um diagnóstico de rede.
@@ -458,7 +545,12 @@ export class AgentOrchestratorService {
       (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
     // Já pedimos o documento duas vezes sem conseguir identificar: para de insistir e passa para um atendente.
     const cpfAsks = recentAgentReplies.filter((m) => /cpf|cnpj/i.test(m.content)).length;
-    const identityExhausted = wantsIdentification && cpfAsks >= MAX_IDENTIFICATION_ASKS;
+    // Só conta quando há um pedido de conta/conexão em aberto (ou o cliente tentou um documento): depois
+    // de um "bom dia", conversa solta não é "tentativa falhada" e não pode virar transferência.
+    const identityExhausted =
+      wantsIdentification &&
+      cpfAsks >= MAX_IDENTIFICATION_ASKS &&
+      (needsAccountOrNetwork || Boolean(attemptedTerm) || (await this.hasAccountRequest(conversationId)));
     const needsCpf = wantsIdentification && !identityExhausted;
 
     // Se a classificação falhou, não escolhemos ferramenta nenhuma a partir dela — `toolResults`/
@@ -656,7 +748,7 @@ export class AgentOrchestratorService {
     } else if (declined) {
       replyText = DECLINED_MESSAGE;
     } else if (identityExhausted) {
-      replyText = IDENTITY_HANDOFF_MESSAGE;
+      replyText = attemptedTerm ? IDENTITY_HANDOFF_MESSAGE : IDENTITY_HANDOFF_NO_DOCUMENT_MESSAGE;
     } else if (realPulseContract && toolResults.length === 0 && PULSE_HANDOFF_MESSAGE[classification.intent]) {
       replyText = PULSE_HANDOFF_MESSAGE[classification.intent] as string;
     } else if (classification.intent === 'OUTRO' && primaryResult?.status === 'NOT_FOUND' && ai.mode !== 'LIVE') {
@@ -703,7 +795,12 @@ export class AgentOrchestratorService {
 
         // O texto do LLM só sai se não afirmar nada além dos fatos; senão, resposta determinística.
         if (ai.mode === 'LIVE') {
-          const verdict = checkReplyAgainstFacts(replyText, allFacts, { customerMessage, history });
+          const verdict = checkReplyAgainstFacts(replyText, allFacts, {
+            customerMessage,
+            history,
+            trustedTexts: [replyInput.persona?.supportHours ?? ''],
+            customerIdentified: Boolean(decisionIdentity),
+          });
           if (!verdict.ok) {
             this.logger.warn(
               `Resposta do LLM (${ai.name}) descartada pelo reply-guard: ${verdict.violations.join('; ')}`,
@@ -758,6 +855,24 @@ export class AgentOrchestratorService {
       model: ai.model,
       mode: ai.mode,
     };
+  }
+
+  /** O cliente já pediu nesta conversa algo que exige a conta ou a conexão dele. */
+  private async hasAccountRequest(conversationId: string): Promise<boolean> {
+    const run = await this.db.client.agentRun.findFirst({
+      where: { conversationId, intent: { in: [...ACCOUNT_INTENTS, ...NETWORK_INTENTS] } },
+      select: { id: true },
+    });
+    return Boolean(run);
+  }
+
+  /** A resposta anterior do agente pediu CPF/CNPJ (a mensagem atual é a réplica a esse pedido). */
+  private async lastAgentAskedDocument(conversationId: string): Promise<boolean> {
+    const last = await this.db.client.message.findFirst({
+      where: { conversationId, role: 'AGENT' },
+      orderBy: { createdAt: 'desc' },
+    });
+    return Boolean(last && /cpf|cnpj/i.test(last.content));
   }
 
   /** Última fala do cliente que não é só um documento (o pedido de verdade), ou `fallback`. */
@@ -984,9 +1099,7 @@ export class AgentOrchestratorService {
     | { kind: 'not_found'; term: string }
     | { kind: 'locked' }
   > {
-    const documentMatch =
-      message.match(/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/) || message.match(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/);
-    const digits = documentMatch ? normalizeDocument(documentMatch[0]) : null;
+    const digits = extractDocument(message);
     if (!digits) return { kind: 'none' };
 
     const { handoffAfterFailures } = await this.policy.getLimits();

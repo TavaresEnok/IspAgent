@@ -10,7 +10,10 @@ const VALID_CONFIDENCES: Confidence[] = ['HIGH', 'MEDIUM', 'LOW'];
 
 export const CLASSIFY_SYSTEM_PROMPT =
   'Você classifica a mensagem de um cliente de provedor de internet em UMA destas intenções: ' +
-  `${VALID_INTENTS.join(', ')}. Responda SOMENTE um JSON: {"intent": "...", "confidence": "HIGH"|"MEDIUM"|"LOW"}.`;
+  `${VALID_INTENTS.join(', ')}. Use FINANCEIRO/SEGUNDA_VIA/PAGAMENTO só quando o cliente PEDE algo de fatura ou ` +
+  'pagamento. Perguntas sobre o cadastro ou a identificação ("não tenho cadastro?", "por que o CPF?"), ' +
+  'reclamações sobre a resposta anterior ("não pedi isso") e conversa solta são OUTRO. ' +
+  'Responda SOMENTE um JSON: {"intent": "...", "confidence": "HIGH"|"MEDIUM"|"LOW"}.';
 
 /**
  * Extrai o objeto JSON de uma resposta de modelo mesmo quando vem cercado de ```json ... ``` ou de texto

@@ -28,6 +28,10 @@ const UNLOCK_CLAIM =
 const ACTION_CLAIM =
   /\b(abri|criei|registrei|agendei|marquei)\b|\b(chamado|visita|atendimento)\b[^.!?\n]{0,40}\b(foi|est[aá]|ficou)\s+(aberto|criado|registrado|agendad[oa]|marcad[oa])\b/i;
 
+// "não encontrei dados/cadastro/informações para esse documento" — com cliente identificado, é mentira.
+const IDENTITY_DENIAL =
+  /n[aã]o\s+(?:consegui\s+)?(?:encontr|localiz|ach)\w*[^.!?\n]{0,50}\b(?:cadastro|dados|informa[cç][oõ]es|registro|documento)\b|(?:sistema|base)\s+n[aã]o\s+(?:encontrou|localizou|achou)|sem\s+cadastro/i;
+
 function toNumber(token: string): number | null {
   const cleaned = token.replace(/R\$\s*/i, '').trim();
   if (!/^\d/.test(cleaned)) return null;
@@ -99,7 +103,14 @@ function collectAllowed(texts: string[], facts: GuardFact[]) {
 export function checkReplyAgainstFacts(
   reply: string,
   facts: GuardFact[],
-  context: { customerMessage?: string; history?: Array<{ content: string }> } = {},
+  context: {
+    customerMessage?: string;
+    history?: Array<{ content: string }>;
+    /** Textos de configuração do próprio tenant que a resposta pode citar (ex.: horário de atendimento). */
+    trustedTexts?: string[];
+    /** A conversa está vinculada a um cadastro: dizer que ele não existe é falso. */
+    customerIdentified?: boolean;
+  } = {},
 ): ReplyGuardResult {
   const violations: string[] = [];
   const factText = facts.map((f) => String(f.value ?? '')).join('\n');
@@ -110,7 +121,11 @@ export function checkReplyAgainstFacts(
   // Os números de dentro de uma URL válida (ids, códigos) não são "valores" a conferir de novo.
   reply = reply.replace(URL_TOKEN, ' ');
 
-  const contextTexts = [context.customerMessage ?? '', ...(context.history ?? []).map((h) => h.content)];
+  const contextTexts = [
+    context.customerMessage ?? '',
+    ...(context.history ?? []).map((h) => h.content),
+    ...(context.trustedTexts ?? []),
+  ];
   const { numbers, dates } = collectAllowed(contextTexts, facts);
 
   for (const token of reply.match(NUMBER_TOKEN) ?? []) {
@@ -137,6 +152,10 @@ export function checkReplyAgainstFacts(
   const unlockConfirmed = facts.some((f) => f.label === 'Desbloqueio em confiança realizado' && f.value === true);
   if (!unlockConfirmed && UNLOCK_CLAIM.test(reply)) {
     violations.push('afirma ter desbloqueado/liberado a conexão, mas o ERP não confirmou a liberação');
+  }
+
+  if (context.customerIdentified && IDENTITY_DENIAL.test(reply)) {
+    violations.push('diz que não encontrou o cadastro, mas o cliente está identificado');
   }
 
   return { ok: violations.length === 0, violations };

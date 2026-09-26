@@ -538,13 +538,13 @@ export class SGPAdapter implements ERPAdapter {
     const rawContracts: any[] = raw.contratos || [{ id: raw.contrato || raw.id, status: raw.status, plano: raw.plano }];
     for (const ct of rawContracts) {
       const contractId = `sgp_${ct.id}`;
-      const planName =
-        ct.servicos?.[0]?.plano?.descricao ||
-        ct.plano?.descricao ||
-        ct.plano?.nome ||
-        ct.plano_nome ||
-        'Plano Fibra';
-      const planId = `sgp_plan_${ct.plano?.id || 'padrao'}`;
+      // No SGP o plano fica no serviço do contrato (`servicos[].plano = { id, descricao }`), não no contrato.
+      const servicePlan = (ct.servicos ?? []).find((s: any) => s?.plano?.id)?.plano;
+      const rawPlan = servicePlan ?? ct.plano;
+      const planName = rawPlan?.descricao || rawPlan?.nome || ct.plano_nome || 'Plano Fibra';
+      // Mesmo id do catálogo (`consultaplano`), onde está o preço. Sem id, um plano só deste contrato:
+      // um plano "padrão" compartilhado tinha o nome sobrescrito a cada cliente sincronizado.
+      const planId = rawPlan?.id ? `sgp_plan_${rawPlan.id}` : `sgp_plan_ct_${ct.id}`;
 
       await this.db.client.plan.upsert({
         where: { id: planId },

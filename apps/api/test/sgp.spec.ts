@@ -140,6 +140,34 @@ describe('SGPAdapter & SgpClientService', () => {
       jest.restoreAllMocks();
     });
 
+    it('o plano do contrato vem de servicos[].plano (formato real do SGP) com o mesmo id do catálogo', async () => {
+      jest.spyOn(sgpClient, 'consultarCliente').mockResolvedValueOnce({
+        clientes: [
+          {
+            id: 1,
+            nome: 'Cliente Serviço',
+            cpfcnpj: '12345678900',
+            contratos: [
+              { id: 30923, status: 'Ativo', servicos: [{ id: 5, tipo: 'Internet', plano: { id: 1463, descricao: 'VIBE 500 MEGA' } }] },
+              { id: 30924, status: 'Ativo', servicos: [] },
+            ],
+          },
+        ],
+      });
+
+      await runWithTenant('tnt_vibe', () => adapter.findCustomer({ document: '123.456.789-00' }));
+
+      const contractPlans = mockDb.client.contract.upsert.mock.calls.map((c: any) => [c[0].where.id, c[0].create.planId]);
+      // Sem id de plano, um plano só daquele contrato — nunca um "padrão" compartilhado entre clientes.
+      expect(contractPlans).toEqual([
+        ['sgp_30923', 'sgp_plan_1463'],
+        ['sgp_30924', 'sgp_plan_ct_30924'],
+      ]);
+      const planUpsert = mockDb.client.plan.upsert.mock.calls.find((c: any) => c[0].where.id === 'sgp_plan_1463');
+      expect(planUpsert[0].update).toEqual({ name: 'VIBE 500 MEGA' }); // não zera o preço vindo do catálogo
+      jest.restoreAllMocks();
+    });
+
     it('getPlans mapeia catálogo de planos e velocidade a partir da descrição', async () => {
       jest.spyOn(sgpClient, 'consultarPlanos').mockResolvedValueOnce({
         planos: [
