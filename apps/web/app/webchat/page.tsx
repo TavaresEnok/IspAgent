@@ -503,6 +503,11 @@ export default function WebChatPage() {
     }
     if (sending || sendingVoice) return;
     setError(null);
+    // Fora de HTTPS (ou localhost) o navegador nem expõe o microfone: não é questão de permissão.
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setError('O áudio só funciona com conexão segura (https). Digite a sua mensagem por enquanto.');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
@@ -519,8 +524,15 @@ export default function WebChatPage() {
       recorder.start();
       setRecordingVoice(true);
       recordTimerRef.current = setTimeout(() => recorder.state === 'recording' && recorder.stop(), MAX_RECORDING_MS);
-    } catch {
-      setError('Não consegui acessar o microfone. Verifique a permissão do navegador.');
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : '';
+      setError(
+        name === 'NotFoundError'
+          ? 'Não encontrei nenhum microfone neste aparelho.'
+          : name === 'NotAllowedError'
+            ? 'O acesso ao microfone foi bloqueado. Libere o microfone para este site no cadeado da barra de endereço.'
+            : 'Não consegui acessar o microfone. Verifique a permissão do navegador.',
+      );
     }
   }
 
