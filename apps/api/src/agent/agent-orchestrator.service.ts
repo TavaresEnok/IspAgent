@@ -650,6 +650,9 @@ export class AgentOrchestratorService {
       where: { id: agentRun.id },
       data: {
         outcome,
+        // A IA pode ter caído no meio do turno: registra quem respondeu de fato.
+        model: ai.model,
+        mode: ai.mode,
         claims: claims as unknown as object,
         policyDecisions: policyDecisions as unknown as object,
       },
