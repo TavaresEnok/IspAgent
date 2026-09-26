@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { IdentityMethod } from '@prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
+import { isPulseId } from '../integrations/pulseisp/pulseisp-ids';
 
 export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW';
 
@@ -87,11 +88,13 @@ export class IdentityResolutionService {
     const digits = normalizeDocument(document);
     if (!digits) return { method: 'NOT_FOUND', confidence: 'LOW' };
 
-    const matches = await this.db.client.customer.findMany({
-      where: { phones: { hasSome: phoneVariants(phone) }, document: { in: documentVariants(digits) } },
-      include: { contracts: { where: { status: 'ACTIVE' } } },
-      take: 2,
-    });
+    const matches = this.preferOfficialRecord(
+      await this.db.client.customer.findMany({
+        where: { phones: { hasSome: phoneVariants(phone) }, document: { in: documentVariants(digits) } },
+        include: { contracts: { where: { status: 'ACTIVE' } } },
+        take: 5,
+      }),
+    );
 
     if (matches.length === 0) return { method: 'NOT_FOUND', confidence: 'LOW' };
     if (matches.length > 1) {
@@ -109,11 +112,13 @@ export class IdentityResolutionService {
     const digits = normalizeDocument(document);
     if (!digits) return { method: 'NOT_FOUND', confidence: 'LOW' };
 
-    const matches = await this.db.client.customer.findMany({
-      where: { document: { in: documentVariants(digits) } },
-      include: { contracts: { where: { status: 'ACTIVE' } } },
-      take: 2,
-    });
+    const matches = this.preferOfficialRecord(
+      await this.db.client.customer.findMany({
+        where: { document: { in: documentVariants(digits) } },
+        include: { contracts: { where: { status: 'ACTIVE' } } },
+        take: 5,
+      }),
+    );
 
     if (matches.length === 0) return { method: 'NOT_FOUND', confidence: 'LOW' };
     if (matches.length > 1) {
@@ -133,6 +138,17 @@ export class IdentityResolutionService {
     });
     if (!customer) return { method: 'NOT_FOUND', confidence: 'LOW' };
     return this.toResolution('PHONE_EXACT', customer, 'HIGH');
+  }
+
+  /**
+   * Mesmo documento exato em mais de um cadastro local: se só UM deles vem do cadastro oficial (ERP) e os
+   * outros são espelhos de telemetria do PulseISP (`pulse_*`, criados pelo simulador/fallback), é a
+   * mesma pessoa — vale o do ERP. Qualquer outra duplicidade continua ambígua (atendente decide).
+   */
+  private preferOfficialRecord<T extends { id: string }>(matches: T[]): T[] {
+    if (matches.length < 2) return matches;
+    const official = matches.filter((m) => !isPulseId(m.id));
+    return official.length === 1 ? official : matches;
   }
 
   private toResolution(

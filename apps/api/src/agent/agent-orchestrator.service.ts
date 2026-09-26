@@ -12,6 +12,7 @@ import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolv
 import { PULSEISP_ADAPTER, PulseISPAdapter } from '../integrations/pulseisp/pulseisp-adapter.interface';
 import { createPulseISPQueryTool } from '../tools/pulseisp-tool';
 import { isPulseId } from '../integrations/pulseisp/pulseisp-ids';
+import { isErpContract } from '../integrations/pulseisp/tenant-pulseisp.adapter';
 import { PulseIspClient } from '../integrations/pulseisp/pulseisp-client.service';
 import { PulseIspMirrorService } from '../integrations/pulseisp/pulseisp-mirror.service';
 import { HandoffService } from '../handoff/handoff.service';
@@ -400,6 +401,8 @@ export class AgentOrchestratorService {
     const realPulseContract = isPulseId(identifiedContractId);
     // Óptico do ERP: nunca para contrato do PulseISP (o ERP não conhece esse id) e nunca dado DEMO
     // misturado num atendimento real.
+    // Diagnóstico de rede de cliente real (PulseISP ou ERP) é dado LIVE na auditoria, nunca rotulado DEMO.
+    const liveNetwork = realPulseContract || isErpContract(identifiedContractId);
     const erpOpticalApplies = !realPulseContract && (this.erpTools.erp.mode === 'LIVE' || !pulseIspEnabled());
 
     // 4. Fluxo de Retenção de Cancelamento
@@ -571,7 +574,7 @@ export class AgentOrchestratorService {
       // O bot vai solicitar ou reiterar a necessidade do CPF para poder dar prosseguimento.
     } else if (!aiFailed && accountAvailable && hasNetwork && hasAccount) {
       // Cenário Multi-Intent: executa diagnóstico de rede, sinal óptico e consulta de fatura/conta
-      const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
+      const pulseTool = liveNetwork ? this.pulseIspLiveTool : this.pulseIspTool;
       const decisionPulse = await this.policy.evaluate(pulseTool.action);
       policyDecisions.push(decisionPulse);
       toolResults.push(
@@ -645,7 +648,7 @@ export class AgentOrchestratorService {
       }
     } else if (!aiFailed && accountAvailable && NETWORK_INTENTS.includes(classification.intent)) {
       if (pulseIspEnabled() || realPulseContract) {
-        const pulseTool = realPulseContract ? this.pulseIspLiveTool : this.pulseIspTool;
+        const pulseTool = liveNetwork ? this.pulseIspLiveTool : this.pulseIspTool;
         const decision = await this.policy.evaluate(pulseTool.action);
         policyDecisions.push(decision);
         toolResults.push(
@@ -1026,16 +1029,17 @@ export class AgentOrchestratorService {
       current.method === 'AMBIGUOUS'
         ? this.identity.resolveByPhoneAndDocument(conversationRecord.channelUserId, digits)
         : this.identity.resolveByDocument(digits);
-    let resolution = await resolveLocal();
-
-    // ERP ativo (SGP/IXC): busca SÓ pelo documento; o adapter espelha o cliente e os contratos no banco.
-    if (resolution.method === 'NOT_FOUND') {
+    // ERP real (SGP) é o cadastro oficial (fatura, plano, contrato): consultado ANTES, só pelo documento,
+    // e o adapter espelha/atualiza o cliente no banco. Com ERP DEMO, só se o banco não tiver o documento.
+    const erpIsLive = this.erpTools.erp.mode === 'LIVE';
+    let resolution = erpIsLive ? null : await resolveLocal();
+    if (!resolution || resolution.method === 'NOT_FOUND') {
       try {
-        const found = await this.erpTools.erp.findCustomer({ document: digits });
-        if (found) resolution = await resolveLocal();
+        await this.erpTools.erp.findCustomer({ document: digits });
       } catch (err) {
         this.logger.warn(`[identity] Falha na busca por documento no ERP: ${err instanceof Error ? err.message : err}`);
       }
+      resolution = await resolveLocal();
     }
 
     // PulseISP: login PPPoE costuma ser o CPF sem formatação. Só CPF (11 dígitos), não CNPJ.
