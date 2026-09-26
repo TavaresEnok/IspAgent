@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ispagent
+          POSTGRES_PASSWORD: ispagent_ci
+          POSTGRES_DB: ispagent
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ispagent" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ISPAGENT_DATABASE_URL: postgresql://ispagent:ispagent_ci@localhost:5432/ispagent?schema=public
+      ISPAGENT_JWT_SECRET: ci_only_jwt_secret
+      ISPAGENT_JWT_REFRESH_SECRET: ci_only_refresh_secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Barra schema.prisma alterado sem migration (aconteceu em 2026-09-23: tabelas só no banco local).
+      - name: Migrations cobrem o schema
+        working-directory: apps/api
+        run: |
+          PGPASSWORD=ispagent_ci psql -h localhost -U ispagent -d ispagent -c "CREATE DATABASE shadow_ci"
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "postgresql://ispagent:ispagent_ci@localhost:5432/shadow_ci" \
+            --exit-code
+
+      - run: pnpm build
+      - run: pnpm test
+
+  verify:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: verify.sh (stack Docker isolada, de ponta a ponta)
+        run: bash scripts/verify.sh --fresh
+      - name: Evidências
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification
+          path: artifacts/verification/
