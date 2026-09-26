@@ -31,11 +31,20 @@ export class RealtimeEventsService {
     );
   }
 
-  /** Só as mensagens de uma conversa — é o que o Web Chat do cliente pode ver. */
+  /** Mensagens e mudanças de status de uma conversa — é o que o Web Chat do cliente pode ver. */
   streamForConversation(tenantId: string, conversationId: string): Observable<{ data: unknown }> {
     return this.subject.asObservable().pipe(
-      filter((e) => e.tenantId === tenantId && e.type === 'NEW_MESSAGE' && e.data?.conversationId === conversationId),
-      map((e) => ({ data: { type: e.type, payload: e.data, timestamp: new Date().toISOString() } })),
+      filter(
+        (e) =>
+          e.tenantId === tenantId &&
+          (e.type === 'NEW_MESSAGE' || e.type === 'STATUS_CHANGED') &&
+          e.data?.conversationId === conversationId,
+      ),
+      map((e) => {
+        // Stream público: de uma mudança de status só vai o status, nunca dados internos (ex.: id do atendente).
+        const payload = e.type === 'STATUS_CHANGED' ? { conversationId, status: e.data?.status } : e.data;
+        return { data: { type: e.type, payload, timestamp: new Date().toISOString() } };
+      }),
     );
   }
 }

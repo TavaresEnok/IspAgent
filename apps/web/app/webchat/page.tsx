@@ -104,6 +104,11 @@ export default function WebChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
 
+  // Cada conversa tem a sua avaliação.
+  useEffect(() => {
+    setSurveySubmitted(false);
+  }, [conversationId]);
+
   // Tempo real: mensagens novas desta conversa (ex.: resposta do atendente humano) chegam sem recarregar.
   useEffect(() => {
     if (!started || !phone) return;
@@ -111,12 +116,19 @@ export default function WebChatPage() {
       `${API_URL}/public/webchat/${VIBE_TENANT}/conversation/${encodeURIComponent(phone)}/stream`,
     );
     es.onmessage = (event) => {
-      let msg: Message | undefined;
+      let parsed: { type?: string; payload?: { message?: Message; status?: string } } | null = null;
       try {
-        msg = JSON.parse(event.data)?.payload?.message;
+        parsed = JSON.parse(event.data);
       } catch {
         return;
       }
+      // Conversa encerrada (ex.: por inatividade): é o momento de pedir a avaliação.
+      if (parsed?.type === 'STATUS_CHANGED' && parsed.payload?.status) {
+        setConversationStatus(parsed.payload.status);
+        if (parsed.payload.status === 'CLOSED' && !surveySubmitted) setShowSurvey(true);
+        return;
+      }
+      const msg = parsed?.payload?.message;
       if (!msg?.id) return;
       const incoming = msg;
       setMessages((prev) => {
@@ -131,7 +143,9 @@ export default function WebChatPage() {
       if (incoming.role === 'HUMAN') setConversationStatus('HUMAN_ACTIVE');
     };
     return () => es.close();
-  }, [started, phone]);
+    // conversationId: depois de um encerramento, a próxima mensagem abre outra conversa e o stream reconecta nela.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, phone, conversationId]);
 
   // URL parameters handler (e.g. ?as=sgp:123 or ?cpf=123)
   useEffect(() => {
@@ -292,6 +306,7 @@ export default function WebChatPage() {
       setError(null);
       const data = await res.json();
       setMessages(data.messages || []);
+      if (data.conversationId) setConversationId(data.conversationId);
       if (data.status) setConversationStatus(data.status);
     } catch (e: any) {
       setError(e.message || 'Erro de conexão.');
@@ -330,6 +345,7 @@ export default function WebChatPage() {
         }
         const data = await res.json();
         setMessages(data.messages || []);
+        if (data.conversationId) setConversationId(data.conversationId);
         if (data.status) setConversationStatus(data.status);
       };
       reader.readAsDataURL(file);
@@ -358,6 +374,7 @@ export default function WebChatPage() {
       if (res.ok) {
         const data = await res.json();
         setMessages(data.messages || []);
+        if (data.conversationId) setConversationId(data.conversationId);
         if (data.status) setConversationStatus(data.status);
       }
     } catch {

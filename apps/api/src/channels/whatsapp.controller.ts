@@ -7,6 +7,7 @@ import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { currentTenantId, runWithTenant } from '../common/tenant-context';
 import { AiProviderResolverService } from '../integrations/ai/ai-provider-resolver.service';
 import { WhatsAppCloudClient } from './whatsapp-cloud.client';
+import { WHATSAPP_CSAT_QUESTION } from '../conversation/conversation-lifecycle.service';
 
 const UNREADABLE_AUDIO_MESSAGE = 'Não consegui entender o seu áudio. Pode escrever a sua mensagem, por favor?';
 const UNREADABLE_IMAGE_MESSAGE =
@@ -84,6 +85,9 @@ export class WhatsAppController {
     if (!messageText && !unreadableReply) return { status: 'ignored_or_status_ack' };
 
     return runWithTenant(tenantId, async () => {
+      const rated = await this.recordCsatReply(fromNumber, messageText);
+      if (rated) return rated;
+
       const conv = await this.conversation.findOrCreateConversation('WHATSAPP', fromNumber);
 
       if (unreadableReply) {
@@ -107,6 +111,37 @@ export class WhatsAppController {
 
       return { status: 'processed', conversationId: conv.id, replies: replies.map((r) => r.content), deliveries, decision };
     });
+  }
+
+  /**
+   * Nota de 1 a 5 enviada logo depois do encerramento automático (que pergunta a nota): vira a avaliação
+   * daquele atendimento em vez de abrir uma conversa nova com a IA.
+   */
+  private async recordCsatReply(fromNumber: string, messageText: string) {
+    const score = /^\s*([1-5])\s*[.!]?\s*$/.exec(messageText)?.[1];
+    if (!score) return null;
+
+    const open = await this.db.client.conversation.findFirst({
+      where: { channel: 'WHATSAPP', channelUserId: fromNumber, status: { not: 'CLOSED' } },
+    });
+    if (open) return null;
+
+    const closed = await this.db.client.conversation.findFirst({
+      where: { channel: 'WHATSAPP', channelUserId: fromNumber, status: 'CLOSED', updatedAt: { gte: new Date(Date.now() - 24 * 3600_000) } },
+      orderBy: { updatedAt: 'desc' },
+      include: { surveys: { select: { id: true } }, messages: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+    const askedForRating = closed?.messages[0]?.role === 'AGENT' && closed.messages[0].content.includes(WHATSAPP_CSAT_QUESTION);
+    if (!closed || !askedForRating || closed.surveys.length > 0) return null;
+
+    await this.db.client.satisfactionSurvey.create({
+      data: { tenantId: closed.tenantId, conversationId: closed.id, score: Number(score) },
+    });
+    const thanks = 'Obrigado pela avaliação! Se precisar de algo, é só mandar uma mensagem.';
+    await this.conversation.appendMessage(closed.id, 'CUSTOMER', messageText.trim());
+    await this.conversation.appendMessage(closed.id, 'AGENT', thanks);
+    const delivery = await this.whatsapp.sendText(fromNumber, thanks);
+    return { status: 'csat_recorded', conversationId: closed.id, score: Number(score), delivery };
   }
 
   /** Aviso proativo (ex.: manutenção na PON) para clientes do tenant logado no WhatsApp. */
