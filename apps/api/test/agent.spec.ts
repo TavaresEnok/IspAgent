@@ -140,6 +140,46 @@ describe('AgentOrchestratorService', () => {
     expect(decision.toolCalls).toHaveLength(0);
   });
 
+  it('cancelamento: pergunta o motivo, e a resposta (mesmo sem "cancelar") vai para a retenção humana', async () => {
+    const phone = freshPhone();
+    const { first, second, conversationId } = await runWithTenant('tnt_demo_alpha', async () => {
+      const conv = await db.client.conversation.create({
+        data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: phone, status: 'AI_ACTIVE' },
+      });
+      const first = await ask(conv.id, 'quero cancelar minha assinatura');
+      const second = await ask(conv.id, 'está muito caro pra mim');
+      return { first, second, conversationId: conv.id };
+    });
+
+    expect(first.outcome).toBe('ANSWERED');
+    expect(second.intent).toBe('CANCELAMENTO');
+    expect(second.outcome).toBe('HANDOFF');
+    const [request, handoff] = await runWithTenant('tnt_demo_alpha', () =>
+      Promise.all([
+        db.client.cancellationRequest.findFirst({ where: { conversationId } }),
+        db.client.handoff.findFirst({ where: { conversationId } }),
+      ]),
+    );
+    expect(request).toMatchObject({ discountOffered: true, status: 'TRANSFERRED' });
+    expect((handoff?.summary as { suggestedNextAction: string }).suggestedNextAction).toMatch(/preço/);
+  });
+
+  it('interesse comercial repetido na mesma conversa não duplica o lead', async () => {
+    const phone = freshPhone();
+    const leads = await runWithTenant('tnt_demo_alpha', async () => {
+      const conv = await db.client.conversation.create({
+        data: { tenantId: 'tnt_demo_alpha', channel: 'WHATSAPP', channelUserId: phone, status: 'AI_ACTIVE' },
+      });
+      await ask(conv.id, 'quero contratar internet');
+      await ask(conv.id, 'quero contratar o plano de 500 mega');
+      return db.client.commercialLead.findMany({ where: { phone } });
+    });
+
+    expect(leads).toHaveLength(1);
+    expect(leads[0].originChannel).toBe('WHATSAPP');
+    expect(leads[0].notes).toContain('500 mega');
+  });
+
   it('consulta de chamado existente (cus_demo_f) executa SupportTool e responde', async () => {
     const decision = await runWithTenant('tnt_demo_alpha', async () => {
       const conv = await db.client.conversation.create({
