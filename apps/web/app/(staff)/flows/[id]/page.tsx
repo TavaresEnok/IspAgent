@@ -147,6 +147,17 @@ function Editor() {
     });
   }, [edges, visited, waitingId]);
 
+  // Abre focado no começo do fluxo, num zoom legível (o minimapa mostra o resto).
+  const initialFocus = useMemo(() => {
+    if (!record) return [];
+    const def = record.definition;
+    const ids = [def.startNodeId];
+    for (let i = 0; i < ids.length && ids.length < 4; i++) {
+      for (const e of def.edges) if (e.source === ids[i] && !ids.includes(e.target) && ids.length < 4) ids.push(e.target);
+    }
+    return ids.map((nodeId) => ({ id: nodeId }));
+  }, [record]);
+
   const selected = nodes.find((n) => n.id === selectedId)?.data.flow ?? null;
   const vars = useMemo(() => {
     const asked = definition.nodes.flatMap((n) => (n.type === 'ask' && n.data.variable ? [n.data.variable] : []));
@@ -351,7 +362,7 @@ function Editor() {
         ) : (
           <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">Nunca publicado</span>
         )}
-        {(dirty || record.draftChanged) && !readOnly && (
+        {(dirty || (record.draftChanged && record.publishedVersion > 0)) && !readOnly && (
           <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
             {dirty ? 'Alterações não salvas' : 'Rascunho diferente do publicado'}
           </span>
@@ -470,7 +481,7 @@ function Editor() {
             deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
             colorMode="dark"
             fitView
-            fitViewOptions={{ padding: 0.2 }}
+            fitViewOptions={{ nodes: initialFocus, padding: 0.25, maxZoom: 1 }}
             minZoom={0.2}
             proOptions={{ hideAttribution: true }}
           >

@@ -132,16 +132,18 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
   const visibleNav = NAV.filter((item) => rank >= ROLE_HIERARCHY[item.minRole]);
 
   return (
-    <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans">
-      {/* Sidebar */}
-      <aside className="w-64 shrink-0 flex flex-col justify-between border-r border-slate-800/80 bg-slate-900/90 p-4">
+    <div className={`flex bg-slate-950 text-slate-100 font-sans ${fullBleed ? 'h-screen' : 'min-h-screen'}`}>
+      {/* Sidebar (no editor de fluxo vira uma barra de ícones para sobrar espaço ao canvas) */}
+      <aside
+        className={`${fullBleed ? 'w-16 p-2' : 'w-64 p-4'} shrink-0 flex flex-col justify-between overflow-y-auto border-r border-slate-800/80 bg-slate-900/90`}
+      >
         <div>
           {/* Brand Header */}
-          <div className="mb-6 flex items-center gap-3 px-2">
+          <div className={`mb-6 flex items-center gap-3 ${fullBleed ? 'justify-center' : 'px-2'}`}>
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 font-extrabold text-white shadow-md shadow-cyan-500/20 text-lg">
               {BRAND.charAt(0).toUpperCase()}
             </div>
-            <div>
+            <div className={fullBleed ? 'hidden' : ''}>
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-base text-white tracking-tight">{BRAND}</span>
               </div>
@@ -159,15 +161,16 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex items-center gap-2.5 rounded-xl px-3 py-2 transition-all ${
+                  title={item.label}
+                  className={`relative flex items-center gap-2.5 rounded-xl py-2 transition-all ${fullBleed ? 'justify-center px-0' : 'px-3'} ${
                     active
                       ? 'bg-gradient-to-r from-cyan-500/20 to-blue-600/10 text-cyan-300 font-semibold border border-cyan-500/30 shadow-sm'
                       : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
                   }`}
                 >
                   <span className="text-sm">{item.icon}</span>
-                  <span className="flex-1">{item.label}</span>
-                  {item.href === '/handoff' && pendingHandoffs > 0 && (
+                  {!fullBleed && <span className="flex-1">{item.label}</span>}
+                  {!fullBleed && item.href === '/handoff' && pendingHandoffs > 0 && (
                     <span className="rounded-full bg-orange-500/20 border border-orange-500/40 text-orange-400 text-[10px] font-bold px-2 py-0.5 animate-pulse">
                       {pendingHandoffs}
                     </span>
@@ -179,7 +182,7 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
         </div>
 
         {/* Footer Area */}
-        <div className="border-t border-slate-800/80 pt-4 px-2 space-y-3">
+        <div className={`border-t border-slate-800/80 pt-4 px-2 space-y-3 ${fullBleed ? 'hidden' : ''}`}>
           {/* User Info */}
           <div className="flex items-center justify-between">
             <div className="min-w-0 pr-2">

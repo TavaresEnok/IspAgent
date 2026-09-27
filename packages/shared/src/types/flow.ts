@@ -393,9 +393,9 @@ export function starterFlow(): FlowDefinition {
     startNodeId: 'inicio',
     settings: { humanRequestInterrupt: true, maxRetries: 2 },
     nodes: [
-      n('inicio', 'start', 0, 200, {}),
-      n('boas_vindas', 'message', 220, 200, { text: 'Olá! Você está falando com o atendimento da {{empresa}}.' }),
-      n('menu', 'menu', 480, 160, {
+      n('inicio', 'start', 0, 180, {}),
+      n('boas_vindas', 'message', 310, 180, { text: 'Olá! Você está falando com o atendimento da {{empresa}}.' }),
+      n('menu', 'menu', 620, 150, {
         text: 'Como posso te ajudar?',
         options: [
           { id: 'op_fatura', label: '2ª via da fatura' },
@@ -403,21 +403,21 @@ export function starterFlow(): FlowDefinition {
           { id: 'op_outro', label: 'Outro assunto' },
         ],
       }),
-      n('pede_cpf', 'ask', 800, 40, {
+      n('pede_cpf', 'ask', 950, 0, {
         text: 'Para localizar a sua conta, me informe o CPF ou CNPJ do titular.',
         variable: 'cpf',
         kind: 'cpf',
         invalidText: 'Não consegui ler esse documento. Digite só os números do CPF ou CNPJ.',
       }),
-      n('identifica', 'identify', 1080, 40, { variable: 'cpf' }),
-      n('fatura', 'lookup', 1340, 0, { query: 'invoice' }),
-      n('fim_fatura', 'end', 1600, 0, { text: 'Posso ajudar em mais alguma coisa? É só escrever.' }),
-      n('nao_achou', 'handoff', 1340, 160, {
+      n('identifica', 'identify', 1260, 0, { variable: 'cpf' }),
+      n('fatura', 'lookup', 1570, -60, { query: 'invoice' }),
+      n('fim_fatura', 'end', 1880, -60, { text: 'Posso ajudar em mais alguma coisa? É só escrever.' }),
+      n('nao_achou', 'handoff', 1570, 130, {
         department: 'FINANCEIRO',
         text: 'Não encontrei o seu cadastro. Vou te passar para um atendente.',
       }),
-      n('ia_conexao', 'ai', 800, 260, { text: 'Me conta o que está acontecendo com a sua internet.' }),
-      n('ia_outro', 'ai', 800, 400, { text: 'Claro! Me conta o que você precisa.' }),
+      n('ia_conexao', 'ai', 950, 250, { text: 'Me conta o que está acontecendo com a sua internet.' }),
+      n('ia_outro', 'ai', 950, 400, { text: 'Claro! Me conta o que você precisa.' }),
     ],
     edges: [
       { id: 'e1', source: 'inicio', sourceHandle: 'next', target: 'boas_vindas' },
