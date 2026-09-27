@@ -40,7 +40,11 @@ export function Simulator({
   const [finished, setFinished] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => endRef.current?.scrollIntoView({ behavior: 'smooth' }), [bubbles]);
+  // Corpo com chaves de propósito: no Chrome atual `scrollIntoView` devolve uma Promise, e um efeito que
+  // devolve algo que não é função derruba o React na limpeza ("is not a function").
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [bubbles]);
 
   function reset() {
     setBubbles([]);
