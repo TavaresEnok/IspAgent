@@ -45,19 +45,20 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
-  users            User[]
-  customers        Customer[]
-  policyConfig     TenantPolicyConfig?
-  aiProviderConfig AiProviderConfig?
-  aiCredentials    AiProviderCredential[]
+  users              User[]
+  customers          Customer[]
+  policyConfig       TenantPolicyConfig?
+  aiProviderConfig   AiProviderConfig?
+  aiCredentials      AiProviderCredential[]
   pulseIspConnection PulseIspConnection?
-  auditLogs        AuditLog[]
-  conversations    Conversation[]
-  knowledgeDocs    KnowledgeDocument[]
-  commercialLeads  CommercialLead[]
-  cancellations    CancellationRequest[]
-  surveys          SatisfactionSurvey[]
-  incidentNotices  IncidentNotification[]
+  auditLogs          AuditLog[]
+  conversations      Conversation[]
+  knowledgeDocs      KnowledgeDocument[]
+  commercialLeads    CommercialLead[]
+  cancellations      CancellationRequest[]
+  surveys            SatisfactionSurvey[]
+  incidentNotices    IncidentNotification[]
+  flows              ConversationFlow[]
 
   @@map("tenants")
 }
@@ -81,38 +82,38 @@ model User {
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
   tokenHash String
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId])
   @@map("refresh_tokens")
 }
 
 model TenantPolicyConfig {
-  tenantId                     String  @id
-  tenant                       Tenant  @relation(fields: [tenantId], references: [id])
-  policyVersion                String  @default("v1")
-  readOnlyMode                 Boolean @default(true)
-  canCreateTicket               Boolean @default(false)
-  canAccessBilling              Boolean @default(true)
-  canSendInvoice                Boolean @default(true)
-  canPerformUnlock              Boolean @default(false)
-  requiresConfirmationForUnlock Boolean @default(true)
-  canQueryPulseISP              Boolean @default(true)
-  canChangePlan                 Boolean @default(false)
-  maxToolCallsPerTurn           Int     @default(8)
-  maxTokensPerTurn              Int     @default(6000)
-  handoffAfterFailures          Int     @default(3)
-  companyName                  String? // vazio = nome do tenant
-  assistantName                String  @default("Assistente Virtual")
-  tone                         String  @default("caloroso, educado, empático e resolutivo (2 a 4 frases)")
-  customRules                  String?
-  supportHours                 String? @default("Segunda a Sexta, 08h às 18h")
+  tenantId                      String   @id
+  tenant                        Tenant   @relation(fields: [tenantId], references: [id])
+  policyVersion                 String   @default("v1")
+  readOnlyMode                  Boolean  @default(true)
+  canCreateTicket               Boolean  @default(false)
+  canAccessBilling              Boolean  @default(true)
+  canSendInvoice                Boolean  @default(true)
+  canPerformUnlock              Boolean  @default(false)
+  requiresConfirmationForUnlock Boolean  @default(true)
+  canQueryPulseISP              Boolean  @default(true)
+  canChangePlan                 Boolean  @default(false)
+  maxToolCallsPerTurn           Int      @default(8)
+  maxTokensPerTurn              Int      @default(6000)
+  handoffAfterFailures          Int      @default(3)
+  companyName                   String? // vazio = nome do tenant
+  assistantName                 String   @default("Assistente Virtual")
+  tone                          String   @default("caloroso, educado, empático e resolutivo (2 a 4 frases)")
+  customRules                   String?
+  supportHours                  String?  @default("Segunda a Sexta, 08h às 18h")
   updatedAt                     DateTime @updatedAt
 
   @@map("tenant_policy_configs")
@@ -195,12 +196,12 @@ model Customer {
 }
 
 model Plan {
-  id             String @id
-  tenantId       String
-  name           String
-  downloadMbps   Int
-  uploadMbps     Int
-  priceCents     Int
+  id           String @id
+  tenantId     String
+  name         String
+  downloadMbps Int
+  uploadMbps   Int
+  priceCents   Int
 
   contracts Contract[]
 
@@ -229,16 +230,16 @@ model Contract {
 }
 
 model Invoice {
-  id              String        @id
-  tenantId        String
-  contractId      String
-  contract        Contract      @relation(fields: [contractId], references: [id])
-  referenceMonth  String
-  amountCents     Int
-  status          InvoiceStatus
-  dueDate         DateTime
-  paidAt          DateTime?
-  barcodeUrl      String?
+  id             String        @id
+  tenantId       String
+  contractId     String
+  contract       Contract      @relation(fields: [contractId], references: [id])
+  referenceMonth String
+  amountCents    Int
+  status         InvoiceStatus
+  dueDate        DateTime
+  paidAt         DateTime?
+  barcodeUrl     String?
 
   @@index([tenantId])
   @@index([contractId])
@@ -247,21 +248,43 @@ model Invoice {
 }
 
 model SupportTicket {
-  id          String       @id @default(uuid())
-  tenantId    String
-  contractId  String
-  contract    Contract     @relation(fields: [contractId], references: [id])
-  status      TicketStatus @default(OPEN)
-  category    String
-  description String
+  id             String       @id @default(uuid())
+  tenantId       String
+  contractId     String
+  contract       Contract     @relation(fields: [contractId], references: [id])
+  status         TicketStatus @default(OPEN)
+  category       String
+  description    String
   idempotencyKey String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId])
   @@index([contractId])
-  @@unique([tenantId, idempotencyKey])
   @@map("support_tickets")
+}
+
+/// Fluxo de atendimento montado no construtor visual. `definition` é o rascunho que o editor salva;
+/// o atendimento usa só `publishedDefinition` (publicar valida o fluxo). Um fluxo ativo por tenant.
+model ConversationFlow {
+  id                  String    @id @default(uuid())
+  tenantId            String
+  tenant              Tenant    @relation(fields: [tenantId], references: [id])
+  name                String
+  description         String?
+  definition          Json
+  publishedDefinition Json?
+  publishedVersion    Int       @default(0)
+  publishedAt         DateTime?
+  active              Boolean   @default(false)
+  updatedById         String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, active])
+  @@map("conversation_flows")
 }
 
 model KnowledgeDocument {
@@ -302,18 +325,20 @@ enum IdentityMethod {
 }
 
 model Conversation {
-  id            String              @id @default(uuid())
-  tenantId      String
-  tenant        Tenant              @relation(fields: [tenantId], references: [id])
-  channel       ConversationChannel
-  channelUserId String
-  customerId    String?
-  customer      Customer?           @relation(fields: [customerId], references: [id])
-  contractId    String?
-  status        ConversationStatus  @default(AI_ACTIVE)
+  id                 String              @id @default(uuid())
+  tenantId           String
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  channel            ConversationChannel
+  channelUserId      String
+  customerId         String?
+  customer           Customer?           @relation(fields: [customerId], references: [id])
+  contractId         String?
+  status             ConversationStatus  @default(AI_ACTIVE)
   identityMethod     IdentityMethod?
   identityConfidence String?
   summary            String?
+  /// Estado do fluxo visual nesta conversa (bloco em espera, variáveis) — ver FlowRunState.
+  flowState          Json?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 
@@ -359,19 +384,19 @@ enum AgentOutcome {
 }
 
 model AgentRun {
-  id                String       @id @default(uuid())
-  tenantId          String
-  conversationId    String
-  conversation      Conversation @relation(fields: [conversationId], references: [id])
-  intent            String
-  intentConfidence  String
-  outcome           AgentOutcome?
-  promptVersion     String
-  model             String
-  mode              String
-  claims            Json         @default("[]")
-  policyDecisions   Json         @default("[]")
-  createdAt         DateTime     @default(now())
+  id               String        @id @default(uuid())
+  tenantId         String
+  conversationId   String
+  conversation     Conversation  @relation(fields: [conversationId], references: [id])
+  intent           String
+  intentConfidence String
+  outcome          AgentOutcome?
+  promptVersion    String
+  model            String
+  mode             String
+  claims           Json          @default("[]")
+  policyDecisions  Json          @default("[]")
+  createdAt        DateTime      @default(now())
 
   toolCalls ToolCall[]
 
@@ -395,9 +420,9 @@ model ToolCall {
   idempotencyKey String?
   createdAt      DateTime @default(now())
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId])
   @@index([agentRunId])
-  @@unique([tenantId, idempotencyKey])
   @@map("tool_calls")
 }
 
@@ -422,16 +447,16 @@ model Handoff {
 }
 
 model AuditLog {
-  id           String   @id @default(uuid())
-  tenantId     String
-  tenant       Tenant   @relation(fields: [tenantId], references: [id])
-  actorType    String   // 'USER' | 'AGENT' | 'SYSTEM'
-  actorId      String?
-  action       String
-  entityType   String?
-  entityId     String?
-  metadata     Json?
-  createdAt    DateTime @default(now())
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  actorType  String // 'USER' | 'AGENT' | 'SYSTEM'
+  actorId    String?
+  action     String
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
 
   @@index([tenantId])
   @@index([tenantId, action])
@@ -440,18 +465,18 @@ model AuditLog {
 }
 
 model CancellationRequest {
-  id               String       @id @default(uuid())
-  tenantId         String
-  tenant           Tenant       @relation(fields: [tenantId], references: [id])
-  conversationId   String
-  conversation     Conversation @relation(fields: [conversationId], references: [id])
-  customerId       String?
-  contractId       String?
-  reason           String?
-  discountOffered  Boolean      @default(false)
-  acceptedRetention Boolean     @default(false)
-  status           String       @default("OPEN") // OPEN | RETAINED | TRANSFERRED | CANCELLED
-  createdAt        DateTime     @default(now())
+  id                String       @id @default(uuid())
+  tenantId          String
+  tenant            Tenant       @relation(fields: [tenantId], references: [id])
+  conversationId    String
+  conversation      Conversation @relation(fields: [conversationId], references: [id])
+  customerId        String?
+  contractId        String?
+  reason            String?
+  discountOffered   Boolean      @default(false)
+  acceptedRetention Boolean      @default(false)
+  status            String       @default("OPEN") // OPEN | RETAINED | TRANSFERRED | CANCELLED
+  createdAt         DateTime     @default(now())
 
   @@index([tenantId])
   @@index([conversationId])
@@ -459,18 +484,18 @@ model CancellationRequest {
 }
 
 model CommercialLead {
-  id             String   @id @default(uuid())
-  tenantId       String
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
-  name           String
-  phone          String
-  address        String?
-  desiredPlan    String?
-  originChannel  String   @default("WEBCHAT") // WEBCHAT | WHATSAPP
-  status         String   @default("NEW") // NEW | CONTACTED | WON | LOST
-  notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(uuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  name          String
+  phone         String
+  address       String?
+  desiredPlan   String?
+  originChannel String   @default("WEBCHAT") // WEBCHAT | WHATSAPP
+  status        String   @default("NEW") // NEW | CONTACTED | WON | LOST
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -483,7 +508,7 @@ model SatisfactionSurvey {
   tenant         Tenant       @relation(fields: [tenantId], references: [id])
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id])
-  score          Int          // 1 a 5
+  score          Int // 1 a 5
   feedback       String?
   createdAt      DateTime     @default(now())
 
@@ -491,4 +516,3 @@ model SatisfactionSurvey {
   @@index([conversationId])
   @@map("satisfaction_surveys")
 }
-

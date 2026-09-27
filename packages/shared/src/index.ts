@@ -6,3 +6,4 @@ export * from './types/pulseisp';
 export * from './types/rbac';
 export * from './types/erp';
 export * from './types/handoff';
+export * from './types/flow';

@@ -24,6 +24,7 @@ const NAV: Array<{ href: string; label: string; icon: string; minRole: Role }> =
   { href: '/customers', label: 'Clientes', icon: '👥', minRole: 'ANALYST' },
   { href: '/sgp', label: 'SGP', icon: '⚡', minRole: 'AGENT' },
   { href: '/whatsapp', label: 'WhatsApp', icon: '📱', minRole: 'TENANT_ADMIN' },
+  { href: '/flows', label: 'Fluxos', icon: '🧩', minRole: 'SUPERVISOR' },
   { href: '/pulseisp', label: 'PulseISP', icon: '📡', minRole: 'TENANT_ADMIN' },
   { href: '/playground', label: 'Laboratório IA', icon: '🧪', minRole: 'TENANT_ADMIN' },
   { href: '/knowledge', label: 'Base de Conhecimento', icon: '📚', minRole: 'READ_ONLY' },
@@ -127,6 +128,7 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
   }
 
   const rank = me ? (ROLE_HIERARCHY[me.role as Role] ?? 0) : 0;
+  const fullBleed = /^\/flows\/[^/]+/.test(pathname ?? '');
   const visibleNav = NAV.filter((item) => rank >= ROLE_HIERARCHY[item.minRole]);
 
   return (
@@ -207,8 +209,9 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto bg-slate-950 p-6 md:p-8">
-        <div className="mx-auto max-w-7xl">
+      {/* O editor de fluxo usa a tela inteira (canvas); as demais páginas ficam centralizadas. */}
+      <main className={`flex-1 bg-slate-950 ${fullBleed ? 'overflow-hidden' : 'overflow-y-auto p-6 md:p-8'}`}>
+        <div className={fullBleed ? 'h-full' : 'mx-auto max-w-7xl'}>
           {realtimeAlert && (
             <div className="mb-6 rounded-2xl border border-orange-500/40 bg-orange-950/80 p-4 text-xs text-orange-200 shadow-xl flex items-center justify-between backdrop-blur-md animate-in slide-in-from-top-4 duration-300">
               <div className="flex items-center gap-3">

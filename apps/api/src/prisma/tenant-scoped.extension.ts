@@ -28,6 +28,7 @@ const TENANT_SCOPED_MODELS = new Set([
   'CommercialLead',
   'SatisfactionSurvey',
   'IncidentNotification',
+  'ConversationFlow',
 ]);
 
 const READ_OPS = new Set([

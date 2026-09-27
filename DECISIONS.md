@@ -625,3 +625,27 @@ muitos dos mesmos problemas. A junção é um merge com os dois históricos; ond
   cobrindo o schema e verificação de ponta a ponta.
 - **Front-end:** `NEXT_PUBLIC_API_URL` vazio = mesmo host da página (a outra linha fixava `localhost:3001`,
   o que quebra o acesso por IP público).
+
+## 2026-09-27 — Construtor de fluxo visual (inspirado no Tiledesk, próprio para provedor)
+
+**Contexto:** o Chatwoot foi escolhido como caixa de entrada; o Tiledesk foi desinstalado, mas o seu editor
+de fluxo por blocos (Design Studio) mostrou valor. O código do Tiledesk (MIT) fica em
+`projetos/tiledesk-estudo/` só para estudo — nada foi copiado para o ISPAgent.
+
+- **Modelo compartilhado** (`packages/shared/src/types/flow.ts`): grafo de blocos + conexões com saídas
+  nomeadas. A MESMA `validateFlow` roda no editor (erros ao vivo) e na API (publicar exige zero erros):
+  saídas obrigatórias ligadas, laço sem Menu/Pergunta, conexão voltando ao Início, textos e limites.
+- **Blocos de provedor, não genéricos:** Identificar (mesma `identifyByDocument`, com o limite de
+  tentativas), Consultar SGP (fatura/plano/conexão pelas ferramentas com policy e auditoria; texto montado
+  só dos fatos, por regras — nunca gerado livremente), Abrir chamado (respeita `canCreateTicket`),
+  Transferir (setor da fila humana), Passar para a IA. O Tiledesk tem ~70 ações genéricas e nenhuma
+  sabe o que é fatura ou CPF.
+- **Nunca deixar o cliente sem resposta:** saída opcional sem ligação, resposta inválida além do limite ou
+  bloco inexistente = transferência para um atendente. "Quero um atendente" interrompe o fluxo (opção).
+- **Rascunho × publicado:** o atendimento só usa `publishedDefinition`; um fluxo ativo por tenant
+  (índice único parcial no banco). Conversa já em andamento quando o fluxo é ativado não é interrompida;
+  versão nova sem o bloco em espera recomeça do Início.
+- **Simulador com dados fictícios:** testa o rascunho sem salvar, sem conversa na fila e sem tocar
+  cliente real ou o SGP (o incômodo dos testes da auditoria de 26/09).
+- **Motor puro** (`apps/api/src/flows/flow-engine.ts`): não acessa banco/ERP, recebe um `FlowRuntime`
+  (real no orquestrador, fictício no simulador) — testável isolado.

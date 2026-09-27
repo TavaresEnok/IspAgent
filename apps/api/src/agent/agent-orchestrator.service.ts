@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AgentDecision, Claim, HandoffSummary, Intent, PolicyDecision, ToolResult } from '@ispagent/shared';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { currentTenantId } from '../common/tenant-context';
@@ -48,6 +49,9 @@ import {
   scopeReply,
 } from './quick-flows';
 import { isWithinSupportHours, offHoursNotice } from './support-hours';
+import { FlowsService } from '../flows/flows.service';
+import { FlowEngine, FlowRuntime } from '../flows/flow-engine';
+import { FlowRunState } from '@ispagent/shared';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
 
@@ -165,6 +169,7 @@ export class AgentOrchestratorService {
   private readonly pulseIspLiveTool;
   private readonly logger = new Logger(AgentOrchestratorService.name);
   private readonly identity: IdentityResolutionService;
+  private readonly flows: FlowsService;
   /** Resposta por regras usada quando o reply-guard descarta o texto do LLM (nunca inventa fato). */
   private readonly deterministicAi = new MockAIProvider();
 
@@ -181,8 +186,10 @@ export class AgentOrchestratorService {
     @Optional() private readonly pulseClient?: PulseIspClient,
     @Optional() private readonly mirror?: PulseIspMirrorService,
     @Optional() identity?: IdentityResolutionService,
+    @Optional() flows?: FlowsService,
   ) {
     this.identity = identity ?? new IdentityResolutionService(db);
+    this.flows = flows ?? new FlowsService(db);
     this.pulseIspTool = createPulseISPQueryTool(pulseisp);
     // Contratos `pulse_*` são clientes REAIS do PulseISP (simulador do painel): mesma ferramenta, mas
     // rotulada como LIVE/RealPulseISPAdapter no ToolCall — nunca aparece como DEMO um dado real.
@@ -206,6 +213,11 @@ export class AgentOrchestratorService {
     if (conversationRecord.status === 'HUMAN_ACTIVE') {
       return null;
     }
+
+    // Fluxo visual ativo (construtor de fluxo do painel): ele conduz a conversa até passar para a IA,
+    // transferir ou terminar. Sem fluxo ativo, o atendimento segue exatamente como antes.
+    const flowDecision = await this.runFlowTurn(conversationRecord, customerMessage);
+    if (flowDecision) return flowDecision;
 
     let identityResult = await this.conversation.resolveIdentity(conversationId);
     let customerName: string | null = null;
@@ -906,6 +918,230 @@ export class AgentOrchestratorService {
       promptVersion: PROMPT_VERSION,
       model: ai.model,
       mode: ai.mode,
+    };
+  }
+
+  /**
+   * Um turno conduzido pelo fluxo visual ativo, ou `null` para seguir o atendimento normal (sem fluxo
+   * ativo, fluxo já passou para a IA/terminou, ou a conversa começou antes de o fluxo existir).
+   *
+   * O fluxo usa as MESMAS garantias do atendimento: identificação só por documento (com o limite de
+   * tentativas), consultas pelas ferramentas com policy e auditoria, e texto das consultas montado só com
+   * os fatos do SGP (respostas por regras, nunca geradas livremente).
+   */
+  private async runFlowTurn(
+    conversationRecord: { id: string; flowState: unknown },
+    customerMessage: string,
+  ): Promise<AgentDecision | null> {
+    const previous = (conversationRecord.flowState ?? null) as FlowRunState | null;
+    if (previous && previous.status !== 'running') return null;
+    const active = await this.flows.activeFlow();
+    if (!active) return null;
+    const conversationId = conversationRecord.id;
+    if (!previous) {
+      // Conversa já em andamento com a IA quando o fluxo foi ativado: não interrompe no meio.
+      const answered = await this.db.client.message.count({ where: { conversationId, role: 'AGENT' } });
+      if (answered > 0) return null;
+    }
+
+    const tenantId = currentTenantId() as string;
+    const tenantPolicy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
+    const companyName = await this.companyName(tenantId, tenantPolicy?.companyName);
+    const mode = this.erpTools.erp.mode;
+    const toolResults: ToolResult[] = [];
+    const policyDecisions: PolicyDecision[] = [];
+    let ticketOpened = false;
+
+    let agentRunId: string | null = null;
+    const ensureRun = async () => {
+      if (!agentRunId) {
+        const run = await this.db.client.agentRun.create({
+          data: {
+            tenantId,
+            conversationId,
+            intent: 'OUTRO',
+            intentConfidence: 'HIGH',
+            promptVersion: `flow-${active.id.slice(0, 8)}-v${active.version}`,
+            model: `fluxo v${active.version}`,
+            mode,
+          },
+        });
+        agentRunId = run.id;
+      }
+      return agentRunId;
+    };
+
+    // Identidade atual da conversa (o fluxo pode identificar no meio do caminho).
+    let identity = await this.conversation.resolveIdentity(conversationId);
+    const who = { customerId: null as string | null, contractId: null as string | null, name: null as string | null };
+    const loadWho = async () => {
+      if ((identity.method === 'DOCUMENT' || identity.method === 'PHONE_EXACT') && identity.customerId) {
+        who.customerId = identity.customerId;
+        who.contractId = identity.contractId ?? null;
+        const c = await this.db.client.customer.findUnique({ where: { id: identity.customerId }, select: { name: true } });
+        who.name = c?.name ?? null;
+      }
+    };
+    await loadWho();
+
+    const composeFromFacts = async (intent: Intent, result: ToolResult) =>
+      this.deterministicAi.composeReply({
+        intent,
+        customerName: who.name,
+        facts: result.facts.map((f) => ({ label: f.label, value: f.value })),
+        toolStatus: result.status,
+        customerMessage,
+        providerName: companyName,
+        persona: { companyName, canCreateTicket: false },
+      });
+
+    const runTool = async (action: string, exec: (runId: string) => Promise<ToolResult>): Promise<ToolResult | null> => {
+      const decision = await this.policy.evaluate(action);
+      policyDecisions.push(decision);
+      if (!decision.allowed) return null;
+      const result = await exec(await ensureRun());
+      toolResults.push(result);
+      return result;
+    };
+
+    const rt: FlowRuntime = {
+      companyName,
+      customerName: () => who.name,
+      isIdentified: () => Boolean(who.customerId && who.contractId),
+      identify: async (document) => {
+        const outcome = await this.identifyByDocument(tenantId, conversationId, document, identity);
+        if (outcome.kind === 'locked') return 'locked';
+        if (outcome.kind !== 'identified') return 'not_found';
+        await this.db.client.conversation.update({
+          where: { id: conversationId },
+          data: {
+            customerId: outcome.resolution.customerId,
+            contractId: outcome.resolution.contractId,
+            identityMethod: outcome.resolution.method,
+            identityConfidence: outcome.resolution.confidence,
+          },
+        });
+        identity = outcome.resolution;
+        await loadWho();
+        return 'identified';
+      },
+      lookup: async (query) => {
+        if (!who.customerId || !who.contractId) return { status: 'not_found' };
+        const contractId = who.contractId;
+        const customerId = who.customerId;
+        let result: ToolResult | null;
+        let intent: Intent;
+        if (query === 'invoice') {
+          intent = 'SEGUNDA_VIA';
+          result = await runTool('billing.view', (id) => this.executeAccountTool('billing', id, contractId, customerId, customerMessage));
+        } else if (query === 'plan') {
+          intent = 'PLANO';
+          result = await runTool('plan.view', (id) => this.executeAccountTool('plan', id, contractId, customerId, customerMessage));
+        } else {
+          intent = 'SUPORTE_INTERNET';
+          const live = isPulseId(contractId) || isErpContract(contractId);
+          const tool = pulseIspEnabled() || isPulseId(contractId)
+            ? live ? this.pulseIspLiveTool : this.pulseIspTool
+            : this.erpTools.opticalSignalTool;
+          result = await runTool(tool.action, (id) => this.executor.run(tool, { contractId }, { agentRunId: id }));
+        }
+        if (!result) return { status: 'error' };
+        if (result.status === 'NOT_FOUND') return { status: 'not_found' };
+        if (result.status !== 'OK') return { status: 'error' };
+        return { status: 'ok', reply: await composeFromFacts(intent, result) };
+      },
+      openTicket: async (description) => {
+        if (!who.customerId || !who.contractId) return { status: 'error' };
+        if (tenantPolicy?.readOnlyMode || !tenantPolicy?.canCreateTicket) return { status: 'error' };
+        const contractId = who.contractId;
+        const customerId = who.customerId;
+        const result = await runTool('support.create_ticket', (id) =>
+          this.executeAccountTool('create_ticket', id, contractId, customerId, description),
+        );
+        const protocol = result?.status === 'OK' ? result.facts.find((f) => f.label === 'Chamado criado')?.value : null;
+        if (!protocol) return { status: 'error' };
+        ticketOpened = true;
+        return { status: 'ok', reply: `Pronto! Abri o chamado ${String(protocol)} para a nossa equipe técnica.` };
+      },
+      isBusinessHours: () => isWithinSupportHours(tenantPolicy?.supportHours),
+      isHumanRequest,
+    };
+
+    const engine = new FlowEngine(active.definition, active.id, active.version);
+    const result = await engine.step(previous, customerMessage, rt);
+
+    await this.db.client.conversation.update({
+      where: { id: conversationId },
+      data: { flowState: result.state as unknown as Prisma.InputJsonValue },
+    });
+
+    // "Passar para a IA" sem mensagem própria: a IA responde já esta mensagem.
+    if (result.outcome === 'ai' && result.replies.length === 0 && !agentRunId) return null;
+
+    const runId = await ensureRun();
+    const claims = this.buildClaims(toolResults);
+    const outcome: AgentDecision['outcome'] =
+      result.outcome === 'handoff' ? 'HANDOFF' : ticketOpened ? 'ACTION_EXECUTED' : 'ANSWERED';
+
+    if (result.handoff) {
+      const answered = Object.entries(result.state.vars)
+        .filter(([k]) => !['empresa', 'nome', 'primeiro_nome', 'cpf'].includes(k))
+        .map(([k, v]) => `${k}: ${v}`)
+        .join('; ');
+      const summary: HandoffSummary = {
+        reason: result.handoff.reason,
+        customerId: who.customerId,
+        contractId: who.contractId,
+        intent: 'OUTRO',
+        reportedProblem: [customerMessage, answered && `Respostas no fluxo: ${answered}`].filter(Boolean).join(' — '),
+        toolsConsulted: toolResults.map((r) => ({ tool: r.tool, result: r.status })),
+        actionsTaken: ticketOpened ? ['Chamado aberto pelo fluxo'] : [],
+        actionsFailed: toolResults.filter((r) => r.status !== 'OK').map((r) => `${r.tool}: ${r.status}`),
+        suggestedNextAction: 'Continuar o atendimento de onde o fluxo parou (ver as mensagens da conversa).',
+      };
+      await this.handoff.createHandoff(conversationId, summary.reason, summary, result.handoff.department);
+    }
+
+    for (let i = 0; i < result.replies.length; i++) {
+      const last = i === result.replies.length - 1;
+      const text = last && result.outcome === 'handoff' ? withOffHoursNotice(result.replies[i], tenantPolicy?.supportHours) : result.replies[i];
+      await this.conversation.appendMessage(conversationId, 'AGENT', text);
+    }
+
+    await this.db.client.agentRun.update({
+      where: { id: runId },
+      data: {
+        outcome,
+        claims: claims as unknown as object,
+        policyDecisions: policyDecisions as unknown as object,
+      },
+    });
+
+    const decisionIdentity: AgentDecision['identity'] =
+      who.customerId && who.contractId && (identity.method === 'DOCUMENT' || identity.method === 'PHONE_EXACT')
+        ? {
+            customerId: who.customerId,
+            contractId: who.contractId,
+            method: identity.method,
+            confidence: identity.confidence,
+            resolvedAt: new Date().toISOString(),
+          }
+        : null;
+
+    return {
+      agentRunId: runId,
+      tenantId,
+      conversationId,
+      intent: 'OUTRO',
+      intentConfidence: 'HIGH',
+      identity: decisionIdentity,
+      toolCalls: toolResults.map((r) => r.toolCallId),
+      policyDecisions,
+      claims,
+      outcome,
+      promptVersion: `flow-v${active.version}`,
+      model: `fluxo v${active.version}`,
+      mode,
     };
   }
 

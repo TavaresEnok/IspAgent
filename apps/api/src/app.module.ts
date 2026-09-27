@@ -11,6 +11,7 @@ import { ConversationModule } from './conversation/conversation.module';
 import { PolicyModule } from './policy/policy.module';
 import { ToolsModule } from './tools/tools.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
+import { FlowsModule } from './flows/flows.module';
 import { AgentModule } from './agent/agent.module';
 import { HandoffModule } from './handoff/handoff.module';
 import { ChannelsModule } from './channels/channels.module';
@@ -34,6 +35,7 @@ import { EventsModule } from './events/events.module';
     PolicyModule,
     ToolsModule,
     KnowledgeModule,
+    FlowsModule,
     AgentModule,
     HandoffModule,
     ChannelsModule,
