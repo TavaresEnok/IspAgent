@@ -8,6 +8,10 @@ import {
   isDocumentRefusal,
   isHumanRefusal,
   isHumanRequest,
+  isBillingDispute,
+  isCancellationNegated,
+  isTitleTransfer,
+  mentionsCompetitor,
 } from '../src/agent/quick-flows';
 import { checkReplyAgainstFacts } from '../src/agent/reply-guard';
 import { cleanTranscription } from '../src/integrations/ai/gemini.provider';
@@ -75,6 +79,23 @@ describe('regressões de conversa', () => {
       }
       expect(cleanTranscription('"minha internet caiu"')).toBe('minha internet caiu');
       expect(cleanTranscription('meu cpf é 041.039.184-03')).toBe('meu cpf é 041.039.184-03');
+    });
+
+    it('auditoria 27/09: titularidade, contestação e concorrente são reconhecidos', () => {
+      const divorce = 'Como transfiro a titularidade para o meu nome sem cancelar o plano?';
+      expect(isTitleTransfer(divorce)).toBe(true);
+      expect(isCancellationNegated(divorce)).toBe(true);
+      expect(isCancellationNegated('quero cancelar o plano')).toBe(false);
+
+      expect(isBillingDispute('Vocês negativaram meu nome no Serasa por uma conta que já paguei!')).toBe(true);
+      expect(isBillingDispute('paguei duas vezes a mesma fatura, quero estorno')).toBe(true);
+      expect(isBillingDispute('já paguei, pode liberar?')).toBe(false);
+      expect(isBillingDispute('quero a segunda via')).toBe(false);
+
+      expect(mentionsCompetitor('O vendedor da Claro Fibra me ofereceu 700 Mega pelo mesmo preço')).toBe(true);
+      expect(mentionsCompetitor('compensa eu mudar para a Starlink?')).toBe(true);
+      expect(mentionsCompetitor('claro, pode abrir o chamado')).toBe(false);
+      expect(mentionsCompetitor('eu vivo sem internet desde ontem')).toBe(false);
     });
 
     it('reply-guard: o horário de atendimento configurado pode ser citado', () => {
@@ -173,6 +194,34 @@ describe('regressões de conversa', () => {
         ctx.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }),
       );
       expect(stored.customerId).toBeNull();
+    });
+
+    it('contestação de cobrança vai ao financeiro sem consultar a fatura (nada de PIX)', async () => {
+      const conv = await newConversation();
+      await ask(conv.id, '111.111.111-02');
+      const decision = await ask(conv.id, 'Vocês negativaram meu nome no Serasa por uma conta que já paguei!');
+      expect(decision?.outcome).toBe('HANDOFF');
+      expect(decision?.toolCalls).toHaveLength(0);
+      expect(await lastReply(conv.id)).not.toMatch(/PIX Copia/);
+      const handoff = await runWithTenant(TENANT, () => ctx.db.client.handoff.findFirstOrThrow({ where: { conversationId: conv.id } }));
+      expect(handoff.department).toBe('FINANCEIRO');
+    });
+
+    it('oferta de concorrente vai para retenção, não vira lead de contratação', async () => {
+      const conv = await newConversation();
+      const decision = await ask(conv.id, 'O vendedor da Claro me ofereceu 700 Mega pelo mesmo preço. Compensa mudar?');
+      expect(decision?.outcome).toBe('HANDOFF');
+      expect(await lastReply(conv.id)).not.toMatch(/Ótima escolha/);
+      const leads = await runWithTenant(TENANT, () => ctx.db.client.commercialLead.count({ where: { notes: { contains: 'Claro' } } }));
+      expect(leads).toBe(0);
+    });
+
+    it('"sem cancelar" não abre o fluxo de cancelamento', async () => {
+      const conv = await newConversation();
+      await ask(conv.id, '111.111.111-02');
+      const decision = await ask(conv.id, 'Como transfiro a titularidade para o meu nome sem cancelar o plano?');
+      expect(decision?.intent).not.toBe('CANCELAMENTO');
+      expect(await lastReply(conv.id)).toMatch(/titularidade/);
     });
 
     it('"não sou o Bruno" desvincula e pede o documento certo', async () => {

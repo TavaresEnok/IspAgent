@@ -24,8 +24,15 @@ import { checkReplyAgainstFacts } from './reply-guard';
 import {
   CANCELLATION_REASON_QUESTION,
   cancellationStep,
+  billingDisputeReply,
+  competitorReply,
   deniesIdentity,
   documentPurposeReply,
+  isBillingDispute,
+  isCancellationNegated,
+  isTitleTransfer,
+  mentionsCompetitor,
+  titleTransferReply,
   documentRefusalReply,
   humanRefusalReply,
   humanRequestReply,
@@ -55,6 +62,8 @@ const MAX_IDENTIFICATION_ASKS = 2;
 /** Transferência fora do expediente: avisa quando a equipe volta em vez de deixar o cliente esperando. */
 function withOffHoursNotice(reply: string, supportHours: string | null | undefined): string {
   if (!supportHours || isWithinSupportHours(supportHours) !== false) return reply;
+  // A resposta já falou do horário (texto da IA): repetir o aviso logo abaixo fica duplicado.
+  if (/\b\d{1,2}\s*h(?:\d{2})?\b[^\n]{0,40}\b\d{1,2}\s*h(?:\d{2})?\b/i.test(reply)) return reply;
   return `${reply}\n\n${offHoursNotice(supportHours)}`;
 }
 
@@ -367,6 +376,48 @@ export class AgentOrchestratorService {
     if (isComplaintAboutReply(customerMessage)) {
       classification = { intent: 'OUTRO', confidence: 'HIGH' };
       detectedIntents = ['OUTRO'];
+    }
+
+    // Pedidos que a palavra-chave classificaria errado: vão direto para o setor certo, sem ferramenta.
+    // Troca de titularidade ("sem cancelar o plano") não é cancelamento; contestação de cobrança não recebe
+    // PIX; oferta de concorrente é caso de retenção, não "interesse em contratar".
+    if (isTitleTransfer(customerMessage)) {
+      return this.finishQuickTurn(quick, {
+        intent: 'FINANCEIRO',
+        outcome: 'HANDOFF',
+        reply: titleTransferReply(customerName),
+        handoff: {
+          reason: 'Cliente pediu troca de titularidade do contrato.',
+          suggestedNextAction: 'Informar os documentos necessários e conduzir a troca de titularidade (sem cancelar o contrato).',
+        },
+      });
+    }
+    if (isBillingDispute(customerMessage)) {
+      return this.finishQuickTurn(quick, {
+        intent: 'FINANCEIRO',
+        outcome: 'HANDOFF',
+        reply: billingDisputeReply(customerName),
+        handoff: {
+          reason: 'Cliente contesta uma cobrança (pagamento não reconhecido, duplicidade, negativação ou estorno).',
+          suggestedNextAction: 'Conferir pagamentos no ERP e o comprovante do cliente antes de qualquer nova cobrança.',
+        },
+      });
+    }
+    if (mentionsCompetitor(customerMessage)) {
+      return this.finishQuickTurn(quick, {
+        intent: 'CANCELAMENTO',
+        outcome: 'HANDOFF',
+        reply: competitorReply(customerName, companyName),
+        handoff: {
+          reason: 'Cliente recebeu oferta de concorrente e avalia trocar de operadora.',
+          suggestedNextAction: 'Retenção: entender a oferta recebida e avaliar uma condição para manter o cliente.',
+        },
+      });
+    }
+    if (isCancellationNegated(customerMessage) && detectedIntents.includes('CANCELAMENTO')) {
+      detectedIntents = detectedIntents.filter((it) => it !== 'CANCELAMENTO');
+      if (detectedIntents.length === 0) detectedIntents = ['OUTRO'];
+      classification = { intent: detectedIntents[0], confidence: 'MEDIUM' };
     }
 
     // Se o cliente acabou de se identificar dinamicamente (ex.: enviou o CPF/código agora),
@@ -777,6 +828,7 @@ export class AgentOrchestratorService {
           history,
           needsCpf,
           justIdentified,
+          handedOff: outcome === 'HANDOFF',
           cpfNotFound: attemptedTerm,
           providerName,
           maxOutputTokens: limits.maxTokensPerTurn,

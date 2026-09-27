@@ -24,6 +24,8 @@ export interface ComposeReplyInput {
   needsCpf?: boolean;
   /** Se o cliente acabou de ser identificado neste turno. */
   justIdentified?: boolean;
+  /** O orquestrador já transferiu esta conversa para a fila humana neste turno. */
+  handedOff?: boolean;
   /** Se um termo/CPF foi digitado mas não foi encontrado no cadastro. */
   cpfNotFound?: string | null;
   /** Nome do provedor (tenant) que o agente representa — usado no prompt em vez de um nome fixo. */

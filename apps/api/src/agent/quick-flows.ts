@@ -169,3 +169,60 @@ export function leadReply(customerName: string | null, companyName: string, alre
     ? capitalizeFirst(`${greeting}já está anotado! Acrescentei essa informação ao seu pedido, e a equipe comercial da ${companyName} entra em contato em breve.`)
     : capitalizeFirst(`${greeting}ótima escolha! Registrei o seu interesse com a equipe comercial da ${companyName}. Um consultor entra em contato em breve com as ofertas disponíveis na sua região.`);
 }
+
+// ---- Pedidos que parecem outra coisa pela palavra-chave ----
+
+// "sem cancelar o plano", "não quero cancelar": o cliente NÃO quer cancelar.
+const CANCELLATION_NEGATED = /\b(?:sem|n[aã]o(?:\s+(?:quero|vou|pretendo|desejo|preciso))?)\s+cancel/i;
+
+export function isCancellationNegated(message: string): boolean {
+  return CANCELLATION_NEGATED.test(message);
+}
+
+const TITLE_TRANSFER = /titularidade|trocar?\s+(?:o\s+)?titular|mudar?\s+(?:o\s+)?titular|passar\s+(?:a\s+internet|o\s+(?:plano|contrato))\s+para\s+(?:o\s+)?meu\s+nome|transferir\s+(?:o\s+)?(?:plano|contrato|internet)\s+para/i;
+
+export function isTitleTransfer(message: string): boolean {
+  return TITLE_TRANSFER.test(message);
+}
+
+export function titleTransferReply(customerName: string | null): string {
+  return capitalizeFirst(
+    `${greetingFor(customerName)}a troca de titularidade é feita pela nossa equipe, que confere os documentos do titular atual e do novo. ` +
+      'O seu plano continua ativo, nada é cancelado. Já passei o seu pedido para um atendente, que te explica os documentos necessários por aqui.',
+  );
+}
+
+// Contestação de cobrança: o cliente diz que já pagou, foi cobrado errado ou negativado. Mandar PIX de
+// novo aqui é jogar cobrança em cima de quem está reclamando dela.
+const BILLING_DISPUTE =
+  /negativ|serasa|\bspc\b|protest(?:o|ad[oa]|aram)|cobran[çc]a\s+indevida|cobrad[oa]\s+(?:indevidamente|errad[oa]|a\s+mais|duas\s+vezes)|cobrando\s+(?:errado|a\s+mais|duas\s+vezes)|em\s+duplicidade|paguei\s+(?:duas\s+vezes|em\s+dobro|a\s+mais)|estorno|reembolso|contest(?:ar|a[cç][aã]o)/i;
+
+export function isBillingDispute(message: string): boolean {
+  return BILLING_DISPUTE.test(message);
+}
+
+export function billingDisputeReply(customerName: string | null): string {
+  return capitalizeFirst(
+    `${greetingFor(customerName)}entendi, e sinto muito pelo transtorno. Contestação de cobrança precisa ser analisada pelo nosso financeiro, ` +
+      'então não vou te mandar nenhuma cobrança agora. Já registrei o seu caso e passei para um atendente do financeiro, que verifica o pagamento e te responde por aqui. ' +
+      'Se tiver o comprovante, pode enviar pelo clipe 📎 que ele fica anexado ao atendimento.',
+  );
+}
+
+// Oferta de concorrente: sinal de cancelamento, não "interesse em contratar" (virava "Ótima escolha!").
+// "Claro"/"Vivo" são palavras comuns ("claro, pode abrir"; "eu vivo aqui"): o nome só conta junto de um
+// contexto de troca/oferta.
+const COMPETITOR_NAME = /\b(?:claro|vivo|tim|oi(?:\s+fibra)?|starlink|net\s+virtua|brisanet|algar|sky)\b/i;
+const SWITCH_CONTEXT =
+  /(?:mudar|trocar|migrar|ir|passar)\s+(?:pr[ao]|para\s+a?|pela?)|ofert|oferec|proposta|vendedor|mais\s+barat|compensa|pelo\s+mesmo\s+pre[çc]o/i;
+
+export function mentionsCompetitor(message: string): boolean {
+  return /concorr[eê]n/i.test(message) || (COMPETITOR_NAME.test(message) && SWITCH_CONTEXT.test(message));
+}
+
+export function competitorReply(customerName: string | null, companyName: string): string {
+  return capitalizeFirst(
+    `${greetingFor(customerName)}obrigado por contar antes de decidir! Eu não comparo ofertas de outras operadoras, mas quero que você continue com a gente: ` +
+      `passei o seu caso para a equipe da ${companyName}, que pode avaliar uma condição para o seu plano. Um atendente te responde por aqui.`,
+  );
+}

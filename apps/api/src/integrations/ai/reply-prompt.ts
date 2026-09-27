@@ -93,8 +93,14 @@ export function buildReplyUserMessage(input: ComposeReplyInput): string {
     ? `\nResumo prévio do histórico da conversa:\n${maskPii(input.summary)}\n`
     : '';
 
+  const handoffNote = input.handedOff
+    ? 'ENCAMINHAMENTO: o sistema JÁ passou esta conversa para a equipe humana (e avisa o horário de atendimento sozinho). ' +
+      'Não pergunte se pode encaminhar, não peça para o cliente voltar depois e não cite o horário — diga que um atendente continua por aqui.'
+    : '';
+
   return [
     subjectHeader,
+    handoffNote,
     `Status de identificação: ${identificationStatus}`,
     `Resultado da consulta: ${input.toolStatus ?? 'OK'}`,
     summarySection,
