@@ -8,10 +8,12 @@ import { ERPModule } from '../integrations/erp/erp.module';
 import { AiProviderModule } from '../integrations/ai/ai-provider.module';
 import { WhatsAppCloudModule } from './whatsapp-cloud.client';
 import { IncidentNotifierService } from './incident-notifier.service';
+import { WahaClient } from './waha.client';
+import { WahaController } from './waha.controller';
 
 @Module({
   imports: [ConversationModule, AgentModule, PulseISPModule, ERPModule, AiProviderModule, WhatsAppCloudModule],
-  controllers: [WebchatController, WhatsAppController, WhatsAppBroadcastController],
-  providers: [IncidentNotifierService],
+  controllers: [WebchatController, WhatsAppController, WhatsAppBroadcastController, WahaController],
+  providers: [IncidentNotifierService, WahaClient],
 })
 export class ChannelsModule {}

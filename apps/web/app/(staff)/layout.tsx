@@ -23,6 +23,7 @@ const NAV: Array<{ href: string; label: string; icon: string; minRole: Role }> =
   { href: '/leads', label: 'Leads & Retenção', icon: '💼', minRole: 'ANALYST' },
   { href: '/customers', label: 'Clientes', icon: '👥', minRole: 'ANALYST' },
   { href: '/sgp', label: 'SGP', icon: '⚡', minRole: 'AGENT' },
+  { href: '/whatsapp', label: 'WhatsApp', icon: '📱', minRole: 'TENANT_ADMIN' },
   { href: '/pulseisp', label: 'PulseISP', icon: '📡', minRole: 'TENANT_ADMIN' },
   { href: '/playground', label: 'Laboratório IA', icon: '🧪', minRole: 'TENANT_ADMIN' },
   { href: '/knowledge', label: 'Base de Conhecimento', icon: '📚', minRole: 'READ_ONLY' },
