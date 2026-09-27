@@ -22,6 +22,8 @@ describe('WAHA (WhatsApp por QR Code no painel)', () => {
     process.env.ISPAGENT_WAHA_API_KEY = 'chave-de-teste';
     process.env.ISPAGENT_WAHA_TENANT_ID = 'tnt_vibe';
     delete process.env.ISPAGENT_WAHA_SESSION;
+    delete process.env.ISPAGENT_WAHA_WEBHOOK_URL;
+    delete process.env.ISPAGENT_WAHA_WEBHOOK_SECRET;
     client = new WahaClient();
   });
 
@@ -68,6 +70,24 @@ describe('WAHA (WhatsApp por QR Code no painel)', () => {
     client.fetchImpl = running.impl;
     await client.start();
     expect(running.calls).toHaveLength(1); // já está rodando: não reinicia (não invalida o QR na tela)
+  });
+
+  it('com o webhook configurado, a sessão nasce (ou é atualizada) mandando as mensagens assinadas ao ISPAgent', async () => {
+    process.env.ISPAGENT_WAHA_WEBHOOK_URL = 'http://api.test/public/waha/webhook';
+    process.env.ISPAGENT_WAHA_WEBHOOK_SECRET = 'segredo';
+    const first = fakeWaha({ 'POST /api/sessions': { status: 201, body: {} } });
+    client.fetchImpl = first.impl;
+    await client.start();
+    const created = JSON.parse(first.calls[1].body as string);
+    expect(created.config.webhooks[0]).toMatchObject({ url: 'http://api.test/public/waha/webhook', events: ['message'], hmac: { key: 'segredo' } });
+
+    const existing = fakeWaha({
+      'GET /api/sessions/default': { status: 200, body: { status: 'SCAN_QR_CODE' } },
+      'PUT /api/sessions/default': { status: 200, body: {} },
+    });
+    client.fetchImpl = existing.impl;
+    await client.start();
+    expect(existing.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/sessions/default', 'PUT /api/sessions/default']);
   });
 
   it('QR Code volta como imagem base64', async () => {

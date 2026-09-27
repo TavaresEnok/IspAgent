@@ -13,14 +13,14 @@ interface Session {
 }
 
 const LABEL: Record<Status | 'NONE', { text: string; style: string }> = {
-  NONE: { text: 'Nunca conectado', style: 'bg-slate-100 text-slate-700' },
-  STOPPED: { text: 'Desconectado', style: 'bg-slate-100 text-slate-700' },
-  STARTING: { text: 'Iniciando...', style: 'bg-blue-100 text-blue-800' },
-  SCAN_QR_CODE: { text: 'Aguardando leitura do QR Code', style: 'bg-amber-100 text-amber-800' },
-  PASSKEY_REQUIRED: { text: 'Confirme no celular', style: 'bg-amber-100 text-amber-800' },
-  PASSKEY_CONFIRMATION_REQUIRED: { text: 'Confirme no celular', style: 'bg-amber-100 text-amber-800' },
-  WORKING: { text: 'Conectado', style: 'bg-emerald-100 text-emerald-800' },
-  FAILED: { text: 'Falhou — conecte de novo', style: 'bg-red-100 text-red-800' },
+  NONE: { text: 'Nunca conectado', style: 'bg-slate-800 text-slate-300' },
+  STOPPED: { text: 'Desconectado', style: 'bg-slate-800 text-slate-300' },
+  STARTING: { text: 'Iniciando...', style: 'bg-blue-500/15 text-blue-300' },
+  SCAN_QR_CODE: { text: 'Aguardando leitura do QR Code', style: 'bg-amber-500/15 text-amber-300' },
+  PASSKEY_REQUIRED: { text: 'Confirme no celular', style: 'bg-amber-500/15 text-amber-300' },
+  PASSKEY_CONFIRMATION_REQUIRED: { text: 'Confirme no celular', style: 'bg-amber-500/15 text-amber-300' },
+  WORKING: { text: 'Conectado', style: 'bg-emerald-500/15 text-emerald-300' },
+  FAILED: { text: 'Falhou — conecte de novo', style: 'bg-red-500/15 text-red-300' },
 };
 
 /** Enquanto a sessão está a caminho de conectar, a tela acompanha sozinha. */
@@ -87,13 +87,13 @@ export default function WhatsAppPage() {
     }
   }
 
-  if (!session) return error ? <p className="text-sm text-red-600">{error}</p> : <p className="text-sm text-slate-500">Carregando...</p>;
+  if (!session) return error ? <p className="text-sm text-red-600">{error}</p> : <p className="text-sm text-slate-400">Carregando...</p>;
 
   if (session.configured === false) {
     return (
       <div className="flex flex-col gap-2">
-        <h1 className="text-lg font-semibold text-slate-900">WhatsApp</h1>
-        <p className="rounded bg-slate-50 px-3 py-2 text-sm text-slate-600">
+        <h1 className="text-xl font-bold text-white">WhatsApp</h1>
+        <p className="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
           A conexão do WhatsApp por QR Code não está habilitada para este provedor. Fale com o suporte do ISPAgent.
         </p>
       </div>
@@ -107,25 +107,25 @@ export default function WhatsAppPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-lg font-semibold text-slate-900">WhatsApp</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-bold text-white">WhatsApp</h1>
+        <p className="text-sm text-slate-400">
           Conecte o número de atendimento do provedor lendo o QR Code com o celular, como no WhatsApp Web.
         </p>
       </div>
 
-      {error && <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="rounded-xl bg-red-500/10 px-4 py-2 text-sm text-red-300">{error}</p>}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <section className="rounded border border-slate-200 bg-white p-4">
-          <h2 className="mb-3 text-sm font-medium text-slate-700">Status</h2>
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+          <h2 className="mb-3 text-sm font-semibold text-slate-200">Status</h2>
           <span className={`inline-block rounded px-2 py-1 text-xs font-medium ${label.style}`}>{label.text}</span>
 
           {connected && (
             <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
               <dt className="text-slate-500">Número</dt>
-              <dd className="font-mono text-slate-800">{session.phone ? formatPhone(session.phone) : '—'}</dd>
+              <dd className="font-mono text-slate-100">{session.phone ? formatPhone(session.phone) : '—'}</dd>
               <dt className="text-slate-500">Perfil</dt>
-              <dd className="text-slate-800">{session.pushName ?? '—'}</dd>
+              <dd className="text-slate-100">{session.pushName ?? '—'}</dd>
             </dl>
           )}
 
@@ -134,7 +134,7 @@ export default function WhatsAppPage() {
               <button
                 onClick={() => act('connect')}
                 disabled={busy !== null}
-                className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
               >
                 {busy === 'connect' ? 'Iniciando...' : 'Conectar WhatsApp'}
               </button>
@@ -143,7 +143,7 @@ export default function WhatsAppPage() {
               <button
                 onClick={() => act('disconnect')}
                 disabled={busy !== null}
-                className="rounded border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                className="rounded-xl border border-red-500/40 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-500/10 disabled:opacity-50"
               >
                 {busy === 'disconnect' ? 'Desconectando...' : waiting ? 'Cancelar' : 'Desconectar'}
               </button>
@@ -151,13 +151,13 @@ export default function WhatsAppPage() {
           </div>
         </section>
 
-        <section className="rounded border border-slate-200 bg-white p-4">
-          <h2 className="mb-3 text-sm font-medium text-slate-700">QR Code</h2>
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+          <h2 className="mb-3 text-sm font-semibold text-slate-200">QR Code</h2>
           {qr ? (
             <div className="flex flex-col items-center gap-3">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={qr} alt="QR Code para conectar o WhatsApp" className="h-64 w-64 rounded border border-slate-200 bg-white p-2" />
-              <ol className="list-decimal pl-5 text-sm text-slate-600">
+              <img src={qr} alt="QR Code para conectar o WhatsApp" className="h-64 w-64 rounded-xl border border-slate-700 bg-white p-2" />
+              <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-300">
                 <li>Abra o WhatsApp no celular do número de atendimento.</li>
                 <li>
                   Toque em <strong>Mais opções ⋮</strong> (ou <strong>Configurações</strong> no iPhone) →{' '}
@@ -167,7 +167,7 @@ export default function WhatsAppPage() {
               </ol>
             </div>
           ) : (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-400">
               {connected
                 ? 'WhatsApp conectado. O QR Code só aparece ao conectar um número.'
                 : waiting

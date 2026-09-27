@@ -1,4 +1,6 @@
-import { Injectable, Logger, Module } from '@nestjs/common';
+import { Injectable, Logger, Module, Optional } from '@nestjs/common';
+import { currentTenantId } from '../common/tenant-context';
+import { WahaClient } from './waha.client';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export type WhatsAppDelivery = { delivered: true; messageId?: string } | { delivered: false; reason: string };
@@ -32,6 +34,19 @@ export function isValidMetaSignature(rawBody: Buffer | undefined, header: string
 export class WhatsAppCloudClient {
   private readonly logger = new Logger(WhatsAppCloudClient.name);
 
+  /** Sem a API oficial configurada, o número conectado por QR Code (WAHA) do tenant atual entrega. */
+  constructor(@Optional() private readonly waha?: WahaClient) {}
+
+  private wahaForCurrentTenant(): WahaClient | null {
+    const tenantId = currentTenantId();
+    return this.waha && tenantId && this.waha.isAvailableFor(tenantId) ? this.waha : null;
+  }
+
+  /** Há algum transporte de WhatsApp para o tenant atual (API oficial ou WAHA). */
+  canSend(): boolean {
+    return this.isConfigured() || this.wahaForCurrentTenant() !== null;
+  }
+
   private get config() {
     return {
       token: process.env.ISPAGENT_WHATSAPP_ACCESS_TOKEN ?? '',
@@ -48,6 +63,8 @@ export class WhatsAppCloudClient {
   async sendText(to: string, body: string): Promise<WhatsAppDelivery> {
     const { token, phoneNumberId, apiVersion } = this.config;
     if (!this.isConfigured()) {
+      const waha = this.wahaForCurrentTenant();
+      if (waha) return waha.sendText(to, body);
       return { delivered: false, reason: 'WhatsApp não configurado (ISPAGENT_WHATSAPP_ACCESS_TOKEN / ISPAGENT_WHATSAPP_PHONE_NUMBER_ID).' };
     }
     try {
@@ -93,7 +110,7 @@ export class WhatsAppCloudClient {
 }
 
 @Module({
-  providers: [WhatsAppCloudClient],
-  exports: [WhatsAppCloudClient],
+  providers: [WhatsAppCloudClient, WahaClient],
+  exports: [WhatsAppCloudClient, WahaClient],
 })
 export class WhatsAppCloudModule {}

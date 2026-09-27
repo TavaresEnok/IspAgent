@@ -649,3 +649,20 @@ de fluxo por blocos (Design Studio) mostrou valor. O código do Tiledesk (MIT) f
   cliente real ou o SGP (o incômodo dos testes da auditoria de 26/09).
 - **Motor puro** (`apps/api/src/flows/flow-engine.ts`): não acessa banco/ERP, recebe um `FlowRuntime`
   (real no orquestrador, fictício no simulador) — testável isolado.
+
+## 2026-09-27 — WhatsApp por QR Code (WAHA) e Chatwoot ligados ao atendimento
+
+- **WAHA → ISPAgent:** webhook `POST /public/waha/webhook` só aceita corpo assinado (`X-Webhook-Hmac`,
+  HMAC-SHA512 com `ISPAGENT_WAHA_WEBHOOK_SECRET`); a sessão do WAHA é criada/atualizada com esse webhook ao
+  conectar pela tela "WhatsApp". Tenant pela configuração (`ISPAGENT_WAHA_TENANT_ID`). Mensagens próprias,
+  de grupo, de outra sessão e reenvios (mesmo id) são ignorados. Contato anônimo (`@lid`) só é atendido se
+  o WAHA revelar o número. Mídia só é baixada do próprio WAHA pelo caminho `/api/files` (a chave nunca vai
+  para o host que veio no webhook).
+- **Um processamento para os dois WhatsApps:** `WhatsAppInboundService` (avaliação pós-atendimento, mídia
+  ilegível, humano assumindo, envio das respostas). O envio escolhe o transporte: API oficial se
+  configurada, senão o WAHA do tenant — vale para IA, atendente humano do painel, encerramento e aviso.
+- **Chatwoot:** o ISPAgent é o Agent Bot da caixa "Site (widget)". O Chatwoot não assina as chamadas de bot,
+  então a URL carrega um segredo de ≥ 32 caracteres (comparação em tempo constante) e a conta é conferida.
+  O bot só responde conversas `pending`; na transferência ela vai para `open` com a etiqueta do setor e o
+  ISPAgent não fala por cima do atendente. Conversas do Chatwoot entram como `WEBCHAT` (`cw:<conta>:<id>`),
+  sem identificação pelo telefone (não verificado) — só por documento.

@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
 const TIMEOUT_MS = 15_000;
+/** Mídia maior que isso não é baixada (custo/abuso); o cliente é orientado a escrever. */
+const MAX_MEDIA_BYTES = 6 * 1024 * 1024;
 
 /** Estados da sessão no WAHA (`SessionInfo.status`). */
 export type WahaStatus =
@@ -48,6 +50,35 @@ export class WahaClient {
       apiKey: (process.env.ISPAGENT_WAHA_API_KEY ?? '').trim(),
       session: (process.env.ISPAGENT_WAHA_SESSION ?? '').trim() || 'default',
       tenantId: (process.env.ISPAGENT_WAHA_TENANT_ID ?? '').trim(),
+      webhookUrl: (process.env.ISPAGENT_WAHA_WEBHOOK_URL ?? '').trim(),
+      webhookSecret: (process.env.ISPAGENT_WAHA_WEBHOOK_SECRET ?? '').trim(),
+    };
+  }
+
+  get session(): string {
+    return this.config.session;
+  }
+
+  get tenantId(): string {
+    return this.config.tenantId;
+  }
+
+  /**
+   * Configuração da sessão no WAHA: as mensagens recebidas vão para o ISPAgent assinadas com HMAC
+   * (sem o segredo configurado, nenhum webhook é registrado — o ISPAgent recusaria mesmo).
+   */
+  private sessionConfig() {
+    const { webhookUrl, webhookSecret } = this.config;
+    if (!webhookUrl || !webhookSecret) return undefined;
+    return {
+      webhooks: [
+        {
+          url: webhookUrl,
+          events: ['message'],
+          hmac: { key: webhookSecret },
+          retries: { policy: 'constant', delaySeconds: 3, attempts: 3 },
+        },
+      ],
     };
   }
 
@@ -72,13 +103,74 @@ export class WahaClient {
   /** Cria a sessão na primeira vez; depois só inicia (idempotente se já estiver rodando). */
   async start(): Promise<void> {
     const { session } = this.config;
+    const config = this.sessionConfig();
     const current = await this.status();
     if (current.status === null) {
-      await this.request('POST', '/api/sessions', { body: { name: session, start: true } });
+      await this.request('POST', '/api/sessions', { body: { name: session, start: true, ...(config ? { config } : {}) } });
       return;
     }
+    // Sessão já existente (ex.: criada antes do webhook): garante a configuração atual antes de iniciar.
+    if (config) await this.request('PUT', `/api/sessions/${session}`, { body: { name: session, config } });
     if (current.status === 'STOPPED' || current.status === 'FAILED') {
       await this.request('POST', `/api/sessions/${session}/start`);
+    }
+  }
+
+  /** Envia texto; `to` = número só com dígitos (DDI+DDD+número). */
+  async sendText(to: string, text: string): Promise<{ delivered: true; messageId?: string } | { delivered: false; reason: string }> {
+    const { session } = this.config;
+    try {
+      const res = await this.request<{ id?: string | { _serialized?: string } }>('POST', '/api/sendText', {
+        body: { session, chatId: `${to}@c.us`, text: text.slice(0, 4096) },
+      });
+      const id = typeof res?.id === 'string' ? res.id : res?.id?._serialized;
+      return { delivered: true, messageId: id };
+    } catch (err) {
+      return { delivered: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Número real de um remetente. O WhatsApp pode identificar o contato por um id anônimo (`...@lid`);
+   * o WAHA traduz para o número quando conhece. `null` = não dá para saber o número (mensagem ignorada:
+   * sem número não há identificação pelo telefone nem como responder com segurança).
+   */
+  async resolvePhone(chatId: string): Promise<string | null> {
+    if (/@c\.us$|@s\.whatsapp\.net$/.test(chatId)) return chatId.split('@')[0].replace(/\D/g, '') || null;
+    if (!chatId.endsWith('@lid')) return null; // grupos, status, canais
+    try {
+      const res = await this.request<{ pn?: string | null }>('GET', `/api/${this.config.session}/lids/${encodeURIComponent(chatId)}`, {
+        allow404: true,
+      });
+      const pn = res?.pn ?? '';
+      return pn ? pn.split('@')[0].replace(/\D/g, '') || null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Baixa a mídia de uma mensagem. Só do próprio WAHA (caminho `/api/files/...` no endereço configurado),
+   * nunca da URL que veio no webhook como está — ela não pode levar a chave da API para outro host.
+   */
+  async downloadMedia(url: string | undefined): Promise<{ base64: string; mimeType: string } | null> {
+    if (!url) return null;
+    let path: string;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      return null;
+    }
+    if (!/^\/api\/files\/[\w@.\-/]+$/.test(path) || path.includes('..')) return null;
+    const { baseUrl, apiKey } = this.config;
+    try {
+      const res = await this.fetchImpl(`${baseUrl}${path}`, { headers: { 'X-Api-Key': apiKey }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+      if (!res.ok) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length === 0 || buf.length > MAX_MEDIA_BYTES) return null;
+      return { base64: buf.toString('base64'), mimeType: (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0] };
+    } catch {
+      return null;
     }
   }
 
@@ -100,7 +192,7 @@ export class WahaClient {
   }
 
   private async request<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     opts: { body?: unknown; allow404?: boolean; accept?: string } = {},
   ): Promise<T | null> {
