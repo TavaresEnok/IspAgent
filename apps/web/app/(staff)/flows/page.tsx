@@ -143,7 +143,7 @@ export default function FlowsPage() {
                 <span className="rounded-full bg-slate-800 px-2 py-0.5 text-slate-300">
                   {f.publishedVersion ? `Publicado v${f.publishedVersion}` : 'Nunca publicado'}
                 </span>
-                {f.draftChanged && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-300">Rascunho alterado</span>}
+                {f.draftChanged && f.publishedVersion > 0 && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-300">Rascunho alterado</span>}
                 <span className="rounded-full bg-slate-800 px-2 py-0.5 text-slate-400">
                   Editado {new Date(f.updatedAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
                 </span>

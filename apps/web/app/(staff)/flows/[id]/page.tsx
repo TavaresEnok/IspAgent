@@ -12,6 +12,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
+  useNodesInitialized,
   useNodesState,
   useReactFlow,
   useUpdateNodeInternals,
@@ -62,7 +63,9 @@ export default function FlowEditorPage() {
 
 function Editor() {
   const { id } = useParams<{ id: string }>();
-  const { screenToFlowPosition, setCenter, getNode } = useReactFlow();
+  const { screenToFlowPosition, setCenter, getNode, fitView } = useReactFlow();
+  const nodesMeasured = useNodesInitialized();
+  const focused = useRef(false);
   const updateNodeInternals = useUpdateNodeInternals();
   const wrapper = useRef<HTMLDivElement>(null);
 
@@ -157,6 +160,14 @@ function Editor() {
     }
     return ids.map((nodeId) => ({ id: nodeId }));
   }, [record]);
+
+  // Enquadrar só depois que TODOS os blocos foram medidos: enquadrar um conjunto ainda sem tamanho dá zoom
+  // infinito e trava o navegador (foi o que aconteceu com `fitViewOptions.nodes`).
+  useEffect(() => {
+    if (!nodesMeasured || focused.current || initialFocus.length === 0) return;
+    focused.current = true;
+    void fitView({ nodes: initialFocus, padding: 0.25, maxZoom: 1 });
+  }, [nodesMeasured, initialFocus, fitView]);
 
   const selected = nodes.find((n) => n.id === selectedId)?.data.flow ?? null;
   const vars = useMemo(() => {
@@ -480,8 +491,6 @@ function Editor() {
             nodesConnectable={!readOnly}
             deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
             colorMode="dark"
-            fitView
-            fitViewOptions={{ nodes: initialFocus, padding: 0.25, maxZoom: 1 }}
             minZoom={0.2}
             proOptions={{ hideAttribution: true }}
           >
