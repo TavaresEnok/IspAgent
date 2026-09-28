@@ -48,6 +48,9 @@ import {
   leadReply,
   scopeReply,
   agentIsWaitingForAnswer,
+  documentReminderReply,
+  isDocumentReminder,
+  REPEAT_BREAKER,
   outOfScopeReply,
   smallTalkKind,
   smallTalkReply,
@@ -109,6 +112,9 @@ const AI_PROVIDER_FAILURE_MESSAGE =
  * cliente escreve de novo e ninguém falou com ele há este tempo, um aviso curto de que a conversa não foi
  * esquecida — no máximo um por janela, para não virar o "loop" de respostas.
  */
+const DOCUMENT_REASK =
+  'Pode me mandar o CPF ou CNPJ do titular da conta? Só com ele eu consigo consultar as suas informações com segurança.';
+
 const WAITING_HUMAN_REMINDER_MS = 20 * 60_000;
 const WAITING_HUMAN_MESSAGE =
   'Sua mensagem foi registrada e já está com a nossa equipe. Um atendente te responde por aqui assim que possível.';
@@ -306,19 +312,24 @@ export class AgentOrchestratorService {
         where: { conversationId, role: { in: ['AGENT', 'HUMAN'] } },
         orderBy: { createdAt: 'desc' },
       });
-      if (!agentIsWaitingForAnswer(lastAgent?.content)) {
+      const waiting = agentIsWaitingForAnswer(lastAgent?.content);
+      // Documento pendente: "kkk"/"ok"/"obrigado" recebem um lembrete leve (não um novo pedido de CPF).
+      const reminder = waiting === 'document' && chitchat !== 'greeting' && !hasCustomer;
+      if (!waiting || reminder) {
         const policy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
         return this.finishQuickTurn(
           { tenantId, conversationId, ai, identity: null, reportedProblem: customerMessage, supportHours: policy?.supportHours ?? null },
           {
             intent: 'OUTRO',
             outcome: 'ANSWERED',
-            reply: smallTalkReply(chitchat, {
-              customerName,
-              companyName: await this.companyName(tenantId, policy?.companyName),
-              firstContact: !lastAgent,
-              lastAgentMessage: lastAgent?.content,
-            }),
+            reply: reminder
+              ? documentReminderReply(chitchat, lastAgent?.content)
+              : smallTalkReply(chitchat, {
+                  customerName,
+                  companyName: await this.companyName(tenantId, policy?.companyName),
+                  firstContact: !lastAgent,
+                  lastAgentMessage: lastAgent?.content,
+                }),
           },
         );
       }
@@ -634,6 +645,8 @@ export class AgentOrchestratorService {
       take: 3,
     });
     const askedCpfPreviously = recentAgentReplies.some((m) => /cpf|cnpj/i.test(m.content));
+    // Lembretes ("sem pressa, quando quiser...") não são novos pedidos e não contam para o limite.
+    const cpfRequests = recentAgentReplies.filter((m) => /cpf|cnpj/i.test(m.content) && !isDocumentReminder(m.content));
 
     // Cliente precisa ser identificado (pedir CPF) se o assunto requer conta/conexão, OU se o bot já pediu CPF
     // e o cliente ainda não o forneceu (ou digitou algo não encontrado).
@@ -646,7 +659,7 @@ export class AgentOrchestratorService {
       !accountAvailable &&
       (needsAccountOrNetwork || askedCpfPreviously || Boolean(attemptedTerm));
     // Já pedimos o documento duas vezes sem conseguir identificar: para de insistir e passa para um atendente.
-    const cpfAsks = recentAgentReplies.filter((m) => /cpf|cnpj/i.test(m.content)).length;
+    const cpfAsks = cpfRequests.length;
     // Só conta quando há um pedido de conta/conexão em aberto (ou o cliente tentou um documento): depois
     // de um "bom dia", conversa solta não é "tentativa falhada" e não pode virar transferência.
     const identityExhausted =
@@ -929,6 +942,12 @@ export class AgentOrchestratorService {
       }
     }
 
+    // Nunca a mesma fala duas vezes seguidas (é o que o cliente chama de "loop"): na repetição, oferece o
+    // atendente em vez de girar em falso.
+    if (outcome !== 'HANDOFF' && replyText.trim() === recentAgentReplies[0]?.content.trim()) {
+      // Pedido de documento repetido continua sendo pedido (conta para o limite), só com outras palavras.
+      replyText = needsCpf ? DOCUMENT_REASK : REPEAT_BREAKER;
+    }
     if (outcome === 'HANDOFF') replyText = withOffHoursNotice(replyText, tenantPolicy?.supportHours);
     await this.conversation.appendMessage(conversationId, aiFailed ? 'SYSTEM' : 'AGENT', replyText);
 

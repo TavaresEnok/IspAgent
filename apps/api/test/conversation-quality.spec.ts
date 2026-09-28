@@ -124,6 +124,17 @@ describe('atendimento (orquestrador)', () => {
     expect(replies[1]).not.toMatch(/^Combinado|^Certo! Se precisar/);
   });
 
+  it('conversa solta enquanto o CPF está pendente não vira loop de pedidos nem transferência (caso real 28/09)', async () => {
+    const conv = await newConversation();
+    await ask(conv.id, 'quero a segunda via do boleto');
+    for (const msg of ['Kkkkk', 'Tá tudo certo', 'Tá tudo certo']) await ask(conv.id, msg);
+    const next = await ask(conv.id, 'minha internet caiu de novo');
+    expect(next?.outcome).not.toBe('HANDOFF');
+    const replies = await agentReplies(conv.id);
+    for (let i = 1; i < replies.length; i++) expect(replies[i]).not.toBe(replies[i - 1]);
+    expect(replies[1]).toMatch(/quando quiser seguir|Fico no aguardo/);
+  });
+
   it('pedido simples de atendente não pede desculpas; irritação é reconhecida', async () => {
     const simple = await newConversation();
     const d1 = await ask(simple.id, 'Só quero conversar com seu operador');

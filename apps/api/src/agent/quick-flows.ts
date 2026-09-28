@@ -150,14 +150,39 @@ export function smallTalkKind(message: string): SmallTalk | null {
   return SMALL_TALK.find((s) => s.re.test(text))?.kind ?? null;
 }
 
-/**
- * A última fala do atendimento pediu algo (documento, escolha, confirmação)? Então "ok"/"sim" é resposta a
- * isso e segue o fluxo normal — conversa solta só quando nada está pendente.
- */
-export function agentIsWaitingForAnswer(lastAgentMessage: string | null | undefined): boolean {
-  if (!lastAgentMessage) return false;
-  return /\?|cpf|cnpj|digite|informe|me (?:conta|diga|envie|manda)|escolh|op[cç][aã]o|confirm/i.test(lastAgentMessage);
+// Lembrete de documento pendente (resposta a conversa solta enquanto o CPF não veio). Não é um novo
+// pedido: não conta para o limite de pedidos de documento — antes, "kkk" e "tá certo" viravam pedidos de
+// CPF repetidos e o cliente era transferido por "falta de documento" sem ter pedido nada.
+const DOCUMENT_REMINDERS = [
+  'Sem pressa — quando quiser seguir, é só me mandar o CPF ou CNPJ do titular que eu consulto para você.',
+  'Combinado! Fico no aguardo do CPF ou CNPJ do titular; assim que você mandar, eu sigo.',
+];
+
+export function isDocumentReminder(text: string | null | undefined): boolean {
+  return Boolean(text && DOCUMENT_REMINDERS.some((r) => text.includes(r.slice(-40))));
 }
+
+export function documentReminderReply(kind: SmallTalk, lastAgentMessage?: string | null): string {
+  const lead = kind === 'laugh' ? '😄 ' : kind === 'thanks' ? 'Por nada! ' : '';
+  const options = DOCUMENT_REMINDERS.map((r) => `${lead}${r}`);
+  return options.find((o) => o !== lastAgentMessage?.trim()) ?? options[0];
+}
+
+/**
+ * O que a última fala do atendimento está esperando: o documento do titular, uma resposta concreta
+ * (opção, confirmação de chamado) ou nada. Uma pergunta genérica ("Aconteceu algo?") não conta — senão
+ * "kkk" depois dela deixa de ser conversa solta.
+ */
+export function agentIsWaitingForAnswer(lastAgentMessage: string | null | undefined): 'document' | 'answer' | null {
+  if (!lastAgentMessage) return null;
+  if (isDocumentReminder(lastAgentMessage) || /\b(?:cpf|cnpj)\b/i.test(lastAgentMessage)) return 'document';
+  if (/digite|escolh|op[cç][aã]o|confirm|quer que eu|posso abrir|abro o chamado|responda com/i.test(lastAgentMessage)) return 'answer';
+  return null;
+}
+
+/** Última saída quando o atendimento ia repetir a mesma fala: oferecer o humano em vez de girar em falso. */
+export const REPEAT_BREAKER =
+  'Acho que não estou conseguindo te ajudar do jeito certo por aqui. Se quiser, escreva "atendente" que eu chamo alguém da equipe — ou me conta com outras palavras o que você precisa.';
 
 const SMALL_TALK_REPLIES: Record<Exclude<SmallTalk, 'greeting'>, string[]> = {
   laugh: ['😄 Se precisar de alguma coisa, é só me chamar por aqui.', '😄 Tô por aqui se precisar!'],
