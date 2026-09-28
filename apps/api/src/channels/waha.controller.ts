@@ -177,7 +177,9 @@ export class WahaWebhookController {
       return { status: 'ignored' };
     }
 
-    try {
+    // Responde ao WAHA na hora (senão ele reenvia por tempo esgotado) e processa em ordem por número.
+    const previous = this.queues.get(phone) ?? Promise.resolve();
+    const job = previous.then(async () => {
       await runWithTenant(tenantId, async () => {
         const mime = (msg.media?.mimetype ?? '').toLowerCase();
         const media = msg.hasMedia ? await this.waha.downloadMedia(msg.media?.url) : null;
@@ -192,9 +194,17 @@ export class WahaWebhookController {
                 : null;
         await this.inbound.process(phone, incoming);
       });
-    } catch (err) {
-      this.logger.error(`Falha ao processar mensagem do WAHA: ${err instanceof Error ? err.message : err}`);
-    }
-    return { status: 'received' };
+    })
+      .catch((err) => this.logger.error(`Falha ao processar mensagem do WAHA: ${err instanceof Error ? err.message : err}`))
+      .finally(() => {
+        if (this.queues.get(phone) === job) this.queues.delete(phone);
+      });
+    this.queues.set(phone, job);
+    this.lastJob = job;
+    return { status: 'accepted' };
   }
+
+  private readonly queues = new Map<string, Promise<void>>();
+  /** Último processamento agendado (os testes esperam por ele). */
+  lastJob: Promise<void> = Promise.resolve();
 }

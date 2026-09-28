@@ -94,7 +94,8 @@ describe('canais: WhatsApp por QR Code (WAHA) e Chatwoot (Agent Bot)', () => {
       const phone = `55119${Math.floor(10000000 + Math.random() * 89999999)}`;
       const body = message(`${phone}@c.us`, 'bom dia');
       const { req, sig } = signed(body);
-      expect(await controller.webhook(req, body, sig)).toEqual({ status: 'received' });
+      expect(await controller.webhook(req, body, sig)).toEqual({ status: 'accepted' });
+      await controller.lastJob;
 
       const sends = calls.filter((c) => c.url === 'http://waha.test/api/sendText');
       expect(sends.length).toBeGreaterThan(0);
@@ -111,6 +112,7 @@ describe('canais: WhatsApp por QR Code (WAHA) e Chatwoot (Agent Bot)', () => {
       const body = message(`5511988${Math.floor(100000 + Math.random() * 899999)}@c.us`, 'oi');
       const { req, sig } = signed(body);
       await controller.webhook(req, body, sig);
+      await controller.lastJob;
       const first = calls.length;
       expect(await controller.webhook(req, body, sig)).toEqual({ status: 'duplicate' });
       expect(calls.length).toBe(first);
@@ -173,7 +175,8 @@ describe('canais: WhatsApp por QR Code (WAHA) e Chatwoot (Agent Bot)', () => {
     it('responde na conversa do Chatwoot e, ao transferir, passa para a fila humana com o setor', async () => {
       const { controller, calls } = chatwoot();
       const convId = Math.floor(100000 + Math.random() * 800000);
-      await controller.webhook(CW_TOKEN, event(convId, 'quero falar com um atendente'));
+      expect(await controller.webhook(CW_TOKEN, event(convId, 'quero falar com um atendente'))).toEqual({ status: 'accepted' });
+      await controller.lastJob;
 
       const replies = calls.filter((c) => c.url === `http://chatwoot.test/api/v1/accounts/1/conversations/${convId}/messages`);
       expect(replies.length).toBeGreaterThan(0);

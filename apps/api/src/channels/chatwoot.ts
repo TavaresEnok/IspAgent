@@ -167,13 +167,24 @@ export class ChatwootWebhookController {
     }
     if (!(await this.prisma.tenant.findUnique({ where: { id: c.tenantId } }))) return { status: 'ignored' };
 
-    try {
-      await runWithTenant(c.tenantId, () => this.process(c.tenantId, convId, body));
-    } catch (err) {
-      this.logger.error(`Falha ao processar mensagem do Chatwoot: ${err instanceof Error ? err.message : err}`);
-    }
-    return { status: 'received' };
+    // Responde ao Chatwoot NA HORA e processa depois: ele espera poucos segundos pelo webhook do bot e, se
+    // passar, marca o bot como falho e entrega a conversa aos humanos (aconteceu com a IA + SGP no meio).
+    // Mensagens da mesma conversa são processadas em ordem.
+    const previous = this.queues.get(convId) ?? Promise.resolve();
+    const job = previous
+      .then(() => runWithTenant(c.tenantId, () => this.process(c.tenantId, convId, body)))
+      .catch((err) => this.logger.error(`Falha ao processar mensagem do Chatwoot: ${err instanceof Error ? err.message : err}`))
+      .finally(() => {
+        if (this.queues.get(convId) === job) this.queues.delete(convId);
+      });
+    this.queues.set(convId, job);
+    this.lastJob = job;
+    return { status: 'accepted' };
   }
+
+  private readonly queues = new Map<number, Promise<void>>();
+  /** Último processamento agendado (os testes esperam por ele). */
+  lastJob: Promise<void> = Promise.resolve();
 
   private async process(tenantId: string, chatwootConvId: number, body: ChatwootEvent) {
     const attachment = body.attachments?.[0];
