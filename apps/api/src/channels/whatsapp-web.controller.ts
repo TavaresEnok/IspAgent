@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { currentTenantId, runWithTenant } from '../common/tenant-context';
@@ -23,6 +23,11 @@ import { EvolutionError } from './evolution.client';
 import { WhatsAppChannelService } from './whatsapp-channel.service';
 import { Incoming, WhatsAppInboundService } from './whatsapp-inbound.service';
 import { TenantAccessService } from '../platform/tenant-access.service';
+
+class TestModeDto {
+  @IsBoolean() enabled!: boolean;
+  @IsArray() @ArrayMaxSize(50) @IsString({ each: true }) @MaxLength(30, { each: true }) numbers!: string[];
+}
 
 class CloudDto {
   @IsString() @MaxLength(30) phoneNumberId!: string;
@@ -82,6 +87,15 @@ export class WhatsAppWebController {
     return view;
   }
 
+  /** Modo teste: a IA só responde aos números da lista (o resto do WhatsApp segue normal no celular). */
+  @Put('test-mode')
+  @Roles('TENANT_ADMIN')
+  async saveTestMode(@Body() dto: TestModeDto, @Req() req: Request) {
+    const view = await this.channels.saveTestMode(currentTenantId() as string, dto);
+    await this.audit(req, dto.enabled ? 'whatsapp.test_mode_on' : 'whatsapp.test_mode_off');
+    return view;
+  }
+
   private async call<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
@@ -100,6 +114,7 @@ export class WhatsAppWebController {
 }
 
 interface EvolutionMessage {
+  messageTimestamp?: number | string;
   key?: { remoteJid?: string; fromMe?: boolean; id?: string; senderPn?: string; remoteJidAlt?: string; participant?: string };
   message?: {
     conversation?: string;
@@ -172,6 +187,8 @@ export class EvolutionWebhookController {
     const phone = evolutionSender(msg.key);
     if (!phone) return { status: 'ignored' };
     if (msg.key.id && !firstTime(`${instance}:${msg.key.id}`)) return { status: 'duplicate' };
+    const gate = await this.channels.accepts(tenantId, phone, Number(msg.messageTimestamp) || null);
+    if (!gate.ok) return { status: gate.reason };
 
     const key = `${tenantId}:${phone}`;
     const job = (this.queues.get(key) ?? Promise.resolve())

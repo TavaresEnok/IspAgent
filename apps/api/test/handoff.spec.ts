@@ -63,10 +63,18 @@ describe('Handoff', () => {
         data: { tenantId: 'tnt_demo_alpha', channel: 'WEBCHAT', channelUserId: '+5511999990007', status: 'AI_ACTIVE' },
       });
       // Telefone ambíguo: o agente pede o CPF; tentativas erradas esgotam o limite da policy (3) → humano.
-      await ask(conv.id, 'quero ver minha fatura, por favor');
-      await ask(conv.id, 'meu cpf é 000.000.000-01');
-      await ask(conv.id, 'meu cpf é 000.000.000-02');
-      const decision = await ask(conv.id, 'quero ver minha fatura, meu cpf é 000.000.000-03');
+      // A transferência acontece numa dessas mensagens; depois dela a IA fica quieta (fila humana).
+      const decisions = [];
+      for (const msg of [
+        'quero ver minha fatura, por favor',
+        'meu cpf é 000.000.000-01',
+        'meu cpf é 000.000.000-02',
+        'quero ver minha fatura, meu cpf é 000.000.000-03',
+      ]) {
+        decisions.push(await ask(conv.id, msg));
+      }
+      const decision = decisions.find((d) => d?.outcome === 'HANDOFF');
+      expect(decisions.at(-1)).toBeNull();
       return { conversationId: conv.id, decision };
     });
 

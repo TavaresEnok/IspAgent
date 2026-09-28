@@ -31,6 +31,7 @@ import { TenantAccessService } from '../platform/tenant-access.service';
 
 interface MetaMessage {
   from?: string;
+  timestamp?: string;
   type?: string;
   text?: { body?: string };
   audio?: { id?: string };
@@ -120,6 +121,7 @@ export class WhatsAppController {
       for (const msg of value?.messages ?? []) {
         const from = String(msg.from ?? '').replace(/\D/g, '');
         if (!/^\d{10,15}$/.test(from)) continue;
+        if (!(await this.channels.accepts(tenantId, from, Number(msg.timestamp) || null)).ok) continue;
         try {
           await runWithTenant(tenantId, () => this.process(tenantId, from, msg));
         } catch (err) {

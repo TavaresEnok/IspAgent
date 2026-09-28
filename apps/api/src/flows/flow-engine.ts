@@ -24,6 +24,11 @@ export interface FlowRuntime {
   /** `null` = o provedor não configurou horário (a condição segue pelo "sim"). */
   isBusinessHours(): boolean | null;
   isHumanRequest(text: string): boolean;
+  /**
+   * Entende texto livre num menu ("minha net caiu" → "Problema na internet"). Sem ele, só número/rótulo.
+   * Com ele, o que não vira opção nenhuma passa para a IA responder (em vez de "responda com o número").
+   */
+  interpretMenu?(input: string, options: Array<{ id: string; label: string }>): Promise<string | null>;
 }
 
 export interface FlowStepResult {
@@ -131,7 +136,7 @@ export class FlowEngine {
       if (this.def.settings.humanRequestInterrupt && rt.isHumanRequest(input)) {
         return this.handoff(result, 'SUPORTE_TECNICO', HUMAN_REQUEST_TEXT, 'Cliente pediu atendimento humano durante o fluxo.');
       }
-      const answered = this.answer(waiting, input, result);
+      const answered = await this.answer(waiting, input, result, rt);
       if (answered === 'retry') return result;
       current = answered;
     }
@@ -151,16 +156,21 @@ export class FlowEngine {
   }
 
   /** Resposta do cliente a um bloco em espera: devolve o próximo bloco, ou `retry` (já respondeu de novo). */
-  private answer(node: FlowNode, input: string, result: FlowStepResult): string | null | 'retry' {
+  private async answer(node: FlowNode, input: string, result: FlowStepResult, rt: FlowRuntime): Promise<string | null | 'retry'> {
     const { state } = result;
     if (node.type === 'menu') {
-      const option = matchMenuOption(input, node.data.options);
+      const option = matchMenuOption(input, node.data.options) ?? (rt.interpretMenu ? await rt.interpretMenu(input, node.data.options) : null);
       if (option) {
         state.retries = 0;
         result.trace.push({ nodeId: node.id, type: node.type, via: option });
         return this.follow(node, option, result);
       }
-      return this.retryOrExit(node, 'fallback', result, () => `Não entendi. Responda com o número de uma das opções:\n\n${menuText(node, state.vars)}`);
+      // Texto livre que não é nenhuma opção ("kkk", "tá tudo certo", outro assunto): a IA conversa com o
+      // cliente em vez de repetir o menu — repetir "responda com o número" é o que faz o bot parecer burro.
+      if (rt.interpretMenu && /\p{L}/u.test(input)) return this.toAi(result);
+      return this.retryOrExit(node, 'fallback', result, () =>
+        `Não entendi bem. Você pode mandar o número de uma das opções:\n\n${menuText(node, state.vars)}`,
+      );
     }
     if (node.type === 'ask') {
       const value = parseAnswer(node.data.kind, input);
@@ -236,9 +246,7 @@ export class FlowEngine {
         return this.follow(node, this.evaluate(node, vars, rt) ? 'true' : 'false', result);
       case 'ai':
         if (node.data.text?.trim()) result.replies.push(renderFlowText(node.data.text, vars));
-        state.status = 'ai';
-        state.waitingNodeId = null;
-        result.outcome = 'ai';
+        this.toAi(result);
         return 'stop';
       case 'handoff':
         this.handoff(
@@ -283,6 +291,14 @@ export class FlowEngine {
     const edge = this.edges.get(`${node.id}:${handle}`);
     if (edge) return edge.target;
     this.handoff(result, 'SUPORTE_TECNICO', GAP_HANDOFF_TEXT, `Fluxo sem continuação na saída "${handle}" do bloco ${node.id}.`);
+    return null;
+  }
+
+  /** A IA segue daqui (e responde a mensagem atual, se o fluxo não disse nada). */
+  private toAi(result: FlowStepResult): null {
+    result.state.status = 'ai';
+    result.state.waitingNodeId = null;
+    result.outcome = 'ai';
     return null;
   }
 

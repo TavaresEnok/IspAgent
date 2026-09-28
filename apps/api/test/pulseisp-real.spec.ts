@@ -291,7 +291,7 @@ describe('simulador: espelho + identidade + orquestrador com cliente real do Pul
 
   it('sem diagnóstico antes, "que sinal?" recebe orientação (geral ou da base de conhecimento), nunca dado técnico', async () => {
     const { replies } = await conversation(['que sinal?']);
-    expect(replies[0]).toMatch(/Consigo ajudar com|sinal/);
+    expect(replies[0]).toMatch(/Posso te ajudar com|sinal/);
     expect(replies[0]).not.toMatch(/dBm|-29/);
   });
 

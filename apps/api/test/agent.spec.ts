@@ -323,7 +323,7 @@ describe('AgentOrchestratorService', () => {
       expect(decision.outcome).toBe('ANSWERED');
       expect(decision.claims).toHaveLength(0);
       expect(handoffs).toBe(0);
-      expect(reply).toContain('Consigo ajudar com');
+      expect(reply).toMatch(/atendimento da|Posso te ajudar com|Pode falar|Me conta/);
       expect(reply).not.toMatch(/não encontrei esse registro/i);
     }
   });

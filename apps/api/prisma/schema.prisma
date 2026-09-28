@@ -191,6 +191,10 @@ model WhatsAppConnection {
   /// Cloud API: número (phone_number_id da Meta, único) e token de acesso (cifrado).
   phoneNumberId String?  @unique
   accessToken   String?
+  /// Modo teste: a IA só responde aos números de `allowedNumbers` (dígitos, separados por vírgula). Serve
+  /// para testar num número que também recebe mensagens pessoais sem o bot responder a todo mundo.
+  testMode       Boolean  @default(false)
+  allowedNumbers String   @default("")
   updatedAt     DateTime @updatedAt
 
   @@map("whatsapp_connections")

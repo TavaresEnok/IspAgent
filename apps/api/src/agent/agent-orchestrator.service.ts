@@ -47,11 +47,16 @@ import {
   isScopeQuestion,
   leadReply,
   scopeReply,
+  agentIsWaitingForAnswer,
+  outOfScopeReply,
+  smallTalkKind,
+  smallTalkReply,
 } from './quick-flows';
 import { isWithinSupportHours, offHoursNotice } from './support-hours';
 import { FlowsService } from '../flows/flows.service';
 import { TenantAccessService } from '../platform/tenant-access.service';
 import { FlowEngine, FlowRuntime } from '../flows/flow-engine';
+import { interpretMenuChoice } from '../flows/menu-interpreter';
 import { FlowRunState } from '@ispagent/shared';
 
 const PROMPT_VERSION = 'agent-v1-2026-09-14';
@@ -100,15 +105,13 @@ const AI_PROVIDER_FAILURE_MESSAGE =
   'sua conversa para um atendente humano — ele vai te responder em breve.';
 
 /**
- * Resposta para o que não é assunto do atendimento (saudação, conversa solta, pedido fora de escopo) e
- * não achou nada na base de conhecimento. Texto fixo: não afirma nenhum fato, não custa uma chamada de IA
- * e é igual em qualquer provider. Antes isso caía em "não encontrei esse registro no sistema" (frase de
- * cliente-não-encontrado) e abria um handoff a cada "olá".
+ * Na fila humana a IA fica quieta (padrão do Chatwoot: depois da transferência o bot sai de cena). Se o
+ * cliente escreve de novo e ninguém falou com ele há este tempo, um aviso curto de que a conversa não foi
+ * esquecida — no máximo um por janela, para não virar o "loop" de respostas.
  */
-const OUT_OF_SCOPE_GUIDANCE_MESSAGE =
-  'Olá! Sou o assistente de atendimento do seu provedor de internet. Consigo ajudar com: internet lenta, ' +
-  'caindo ou sem conexão; fatura e segunda via; o seu plano; e abrir ou acompanhar um chamado. ' +
-  'Me conta o que você precisa?';
+const WAITING_HUMAN_REMINDER_MS = 20 * 60_000;
+const WAITING_HUMAN_MESSAGE =
+  'Sua mensagem foi registrada e já está com a nossa equipe. Um atendente te responde por aqui assim que possível.';
 
 /**
  * Tentativas de documento erradas/inexistentes por conversa antes de bloquear a identificação por chat
@@ -215,6 +218,9 @@ export class AgentOrchestratorService {
     if (conversationRecord.status === 'HUMAN_ACTIVE') {
       return null;
     }
+    if (conversationRecord.status === 'HANDOFF_PENDING') {
+      return this.whileWaitingForHuman(conversationId, tenantId);
+    }
 
     // Limite mensal de conversas do plano: acima dele a IA não atende — um aviso e a fila humana, uma vez.
     if (this.access && (await this.access.conversationBeyondLimit(tenantId, conversationRecord.createdAt))) {
@@ -291,6 +297,32 @@ export class AgentOrchestratorService {
     // escolha fixa no boot do processo — é assim que trocar de provider/colar chave nova pela UI vale
     // imediatamente, sem reiniciar o container.
     const ai = await this.aiResolver.resolve(tenantId);
+
+    // Conversa solta ("kkk", "ok", "obrigado", "oi", "tchau") sem nada pendente: resposta curta e humana,
+    // sem consultar sistema nem gastar IA — e sem reiniciar o atendimento com a saudação de novo.
+    const chitchat = smallTalkKind(customerMessage);
+    if (chitchat && !justIdentified && !identitySwitched && !identityDenied) {
+      const lastAgent = await this.db.client.message.findFirst({
+        where: { conversationId, role: { in: ['AGENT', 'HUMAN'] } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!agentIsWaitingForAnswer(lastAgent?.content)) {
+        const policy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
+        return this.finishQuickTurn(
+          { tenantId, conversationId, ai, identity: null, reportedProblem: customerMessage, supportHours: policy?.supportHours ?? null },
+          {
+            intent: 'OUTRO',
+            outcome: 'ANSWERED',
+            reply: smallTalkReply(chitchat, {
+              customerName,
+              companyName: await this.companyName(tenantId, policy?.companyName),
+              firstContact: !lastAgent,
+              lastAgentMessage: lastAgent?.content,
+            }),
+          },
+        );
+      }
+    }
 
     // P1 "comportamento correto quando o AI Provider falha": se a classificação falhar, NÃO inventamos
     // uma intenção plausível — usamos 'OUTRO'/'LOW' só como valor de schema, marcamos `aiFailed` e, mais
@@ -372,7 +404,7 @@ export class AgentOrchestratorService {
       return this.finishQuickTurn(quick, {
         intent: 'OUTRO',
         outcome: 'HANDOFF',
-        reply: humanRequestReply(customerName),
+        reply: humanRequestReply(customerName, customerMessage),
         handoff: {
           reason: 'Cliente solicitou atendimento humano ou expressou insatisfação.',
           suggestedNextAction: 'Atendimento manual por operador.',
@@ -822,7 +854,8 @@ export class AgentOrchestratorService {
     } else if (realPulseContract && toolResults.length === 0 && PULSE_HANDOFF_MESSAGE[classification.intent]) {
       replyText = PULSE_HANDOFF_MESSAGE[classification.intent] as string;
     } else if (classification.intent === 'OUTRO' && primaryResult?.status === 'NOT_FOUND' && ai.mode !== 'LIVE') {
-      replyText = OUT_OF_SCOPE_GUIDANCE_MESSAGE;
+      const greeted = await this.db.client.message.count({ where: { conversationId, role: { in: ['AGENT', 'HUMAN'] } } });
+      replyText = outOfScopeReply(companyName, greeted > 0);
     } else {
       try {
         const allFacts = toolResults
@@ -1072,6 +1105,19 @@ export class AgentOrchestratorService {
       },
       isBusinessHours: () => isWithinSupportHours(tenantPolicy?.supportHours),
       isHumanRequest,
+      interpretMenu: async (input, options) => {
+        // A IA do provedor entende a mensagem; se ela falhar, as regras entendem (nunca trava o menu).
+        let intents: Intent[];
+        try {
+          const ai = await this.aiResolver.resolve(tenantId);
+          intents = typeof ai.classifyIntents === 'function'
+            ? (await ai.classifyIntents(input)).intents
+            : [(await ai.classifyIntent(input)).intent];
+        } catch {
+          intents = (await this.deterministicAi.classifyIntents(input)).intents;
+        }
+        return interpretMenuChoice(intents, options);
+      },
     };
 
     const engine = new FlowEngine(active.definition, active.id, active.version);
@@ -1373,6 +1419,21 @@ export class AgentOrchestratorService {
   }
 
   /** Conversa acima do limite do plano: avisa e transfere na primeira mensagem; depois, silêncio (humano). */
+  /** Conversa na fila humana: silêncio, com no máximo um aviso por janela (ver WAITING_HUMAN_REMINDER_MS). */
+  private async whileWaitingForHuman(conversationId: string, tenantId: string): Promise<AgentDecision | null> {
+    const lastReply = await this.db.client.message.findFirst({
+      where: { conversationId, role: { in: ['AGENT', 'HUMAN', 'SYSTEM'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (lastReply && Date.now() - lastReply.createdAt.getTime() < WAITING_HUMAN_REMINDER_MS) return null;
+    const policy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
+    const ai = await this.aiResolver.resolve(tenantId);
+    return this.finishQuickTurn(
+      { tenantId, conversationId, ai, identity: null, reportedProblem: '', supportHours: policy?.supportHours ?? null },
+      { intent: 'OUTRO', outcome: 'HANDOFF', reply: withOffHoursNotice(WAITING_HUMAN_MESSAGE, policy?.supportHours) },
+    );
+  }
+
   private async beyondPlanLimit(conversationId: string, tenantId: string): Promise<AgentDecision | null> {
     const answered = await this.db.client.message.count({ where: { conversationId, role: { in: ['AGENT', 'SYSTEM'] } } });
     if (answered > 0) return null;

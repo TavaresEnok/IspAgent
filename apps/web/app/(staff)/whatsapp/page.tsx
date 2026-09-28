@@ -14,6 +14,8 @@ interface Session {
   pushName: string | null;
   phoneNumberId: string | null;
   hasAccessToken: boolean;
+  testMode: boolean;
+  allowedNumbers: string[];
 }
 
 const LABEL: Record<Status | 'NONE', { text: string; style: string }> = {
@@ -187,8 +189,62 @@ export default function WhatsAppPage() {
       </div>
       )}
 
+      {session.provider && <TestModeForm session={session} onSaved={setSession} />}
+
       <CloudForm session={session} onSaved={setSession} />
     </div>
+  );
+}
+
+/**
+ * Modo teste: a IA só responde aos números da lista. Para testar num número que também recebe mensagens
+ * pessoais — o resto das conversas continua normal no celular, sem resposta automática.
+ */
+function TestModeForm({ session, onSaved }: { session: Session; onSaved: (s: Session) => void }) {
+  const [enabled, setEnabled] = useState(session.testMode);
+  const [numbers, setNumbers] = useState(session.allowedNumbers.join('\n'));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const list = numbers.split(/[\n,;]+/).map((n) => n.trim()).filter(Boolean);
+      const s = await apiFetch<Session>('/whatsapp-web/test-mode', { method: 'PUT', body: JSON.stringify({ enabled, numbers: list }) });
+      onSaved(s);
+      setNumbers(s.allowedNumbers.join('\n'));
+      setMsg({ ok: true, text: s.testMode ? 'Modo teste ligado: a IA só responde aos números da lista.' : 'Modo teste desligado: a IA responde a todos os contatos.' });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Falha ao salvar' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title="Modo teste">
+      <p className="text-xs text-slate-400">
+        Com o modo teste ligado, a IA responde <b>apenas</b> aos números abaixo. Mensagens de grupos, status e as enviadas por você
+        nunca são respondidas, e mensagens com mais de 5 minutos (acumuladas ao reconectar) também não.
+      </p>
+      {!session.testMode && (
+        <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          Desligado: a IA responde a <b>qualquer contato</b> que mandar mensagem no privado para este número.
+        </p>
+      )}
+      {msg && <p className={`rounded-lg px-3 py-2 text-sm ${msg.ok ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300'}`}>{msg.text}</p>}
+      <label className="flex items-center gap-2 text-sm text-slate-200">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="h-4 w-4" />
+        Responder só aos números da lista
+      </label>
+      <Field label="Números liberados" hint="Um por linha, com DDD (ex.: 11 98765-4321). O 55 e o nono dígito são opcionais.">
+        <textarea className={`${inputClass} min-h-[96px] font-mono`} value={numbers} onChange={(e) => setNumbers(e.target.value)} />
+      </Field>
+      <button className={buttonPrimary} disabled={busy} onClick={() => void save()}>
+        {busy ? 'Salvando…' : 'Salvar modo teste'}
+      </button>
+    </Section>
   );
 }
 

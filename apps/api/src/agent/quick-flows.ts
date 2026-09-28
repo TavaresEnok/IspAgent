@@ -107,8 +107,97 @@ export function greetingFor(customerName: string | null): string {
   return first ? `${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}, ` : '';
 }
 
-export function humanRequestReply(customerName: string | null): string {
-  return capitalizeFirst(`${greetingFor(customerName)}compreendo e peço desculpas. Estou transferindo o seu atendimento para um de nossos atendentes agora mesmo. Aguarde um instante que ele te responde por aqui.`);
+// Irritação de verdade merece reconhecimento; um pedido simples de atendente, não ("compreendo e peço
+// desculpas" para quem só pediu um humano soa roteirizado).
+const FRUSTRATION =
+  /absurd|rid[ií]cul|palha[cç]ada|p[eé]ssim|cansad|raiva|revoltad|vergonha|descaso|porra|merda|lixo|n[aã]o aguento|toda hora|de novo|sempre (?:cai|a mesma|isso)|burro|n[aã]o (?:me )?ajuda/i;
+
+export function isFrustrated(message: string): boolean {
+  return FRUSTRATION.test(message);
+}
+
+export function humanRequestReply(customerName: string | null, message = ''): string {
+  const g = greetingFor(customerName);
+  return isFrustrated(message)
+    ? capitalizeFirst(`${g}entendo a sua frustração, e sinto muito por isso. Já chamei um atendente da nossa equipe — ele continua com você por aqui.`)
+    : capitalizeFirst(`${g}claro! Já chamei um atendente da nossa equipe — ele continua com você por aqui.`);
+}
+
+// ---- Conversa solta (risada, "ok", "obrigado", "oi", "tchau") ----
+//
+// Padrão "chitchat" (Rasa CALM): não é pedido de atendimento, então não consulta sistema, não gasta IA e,
+// principalmente, não reinicia o atendimento repetindo a saudação — era o que fazia o bot parecer robô.
+
+export type SmallTalk = 'laugh' | 'thanks' | 'ack' | 'greeting' | 'bye';
+
+const SMALL_TALK: Array<{ kind: SmallTalk; re: RegExp }> = [
+  { kind: 'laugh', re: /^(?:(?:k{2,}|(?:ha){2,}|(?:he){2,}|(?:rs){1,}|😂|🤣|😅|😆)\s*)+[!.]*$/iu },
+  { kind: 'thanks', re: /^(?:muito\s+)?(?:obrigad[oa]|obg|brigad[oa]|valeu|vlw|agrade[cç]o)(?:\s+(?:mesmo|demais|viu|pela ajuda|pelo atendimento|de novo))?[\s!.]*$/iu },
+  {
+    kind: 'ack',
+    re: /^(?:ok(?:ay)?|blz|beleza|certo|entendi|entendido|t[aá]\s*(?:bom|certo|ok)|tudo\s+(?:certo|bem|ok)|t[aá]\s+tudo\s+(?:certo|bem|ok)|(?:t[aá]|est[aá])\s+tudo\s+certo|show|perfeito|combinado|ah\s*t[aá]|hum+|aham|joia|👍|🙏|eita(?:\s+poxa)?|poxa|nossa)[\s!.]*$/iu,
+  },
+  {
+    kind: 'greeting',
+    re: /^(?:oi+e?|ol[aá]|bom\s+dia|boa\s+tarde|boa\s+noite|e\s*a[ií]|opa|hey|al[oô])(?:[\s,!.]+(?:tudo\s+(?:bem|bom|certo)|td\s+bem|pessoal|gente))?[\s!.?]*$/iu,
+  },
+  { kind: 'bye', re: /^(?:tchau|at[eé]\s+(?:mais|logo|breve|amanh[aã])|flw|falou|fui)[\s!.]*$/iu },
+];
+
+export function smallTalkKind(message: string): SmallTalk | null {
+  const text = message.trim();
+  if (!text || text.length > 60) return null;
+  return SMALL_TALK.find((s) => s.re.test(text))?.kind ?? null;
+}
+
+/**
+ * A última fala do atendimento pediu algo (documento, escolha, confirmação)? Então "ok"/"sim" é resposta a
+ * isso e segue o fluxo normal — conversa solta só quando nada está pendente.
+ */
+export function agentIsWaitingForAnswer(lastAgentMessage: string | null | undefined): boolean {
+  if (!lastAgentMessage) return false;
+  return /\?|cpf|cnpj|digite|informe|me (?:conta|diga|envie|manda)|escolh|op[cç][aã]o|confirm/i.test(lastAgentMessage);
+}
+
+const SMALL_TALK_REPLIES: Record<Exclude<SmallTalk, 'greeting'>, string[]> = {
+  laugh: ['😄 Se precisar de alguma coisa, é só me chamar por aqui.', '😄 Tô por aqui se precisar!'],
+  thanks: ['Por nada! Se precisar de mais alguma coisa, é só chamar.', 'Imagina! Qualquer coisa, é só chamar por aqui.'],
+  ack: ['Combinado! Qualquer coisa, é só me chamar por aqui.', 'Certo! Se precisar de algo, é só falar.'],
+  bye: ['Até mais! Quando precisar, é só chamar por aqui.', 'Até logo! Estou por aqui quando precisar.'],
+};
+
+/**
+ * Resposta curta e natural, nunca igual à última fala do atendimento. `firstContact` = ainda não houve
+ * nenhuma resposta nesta conversa (aí a saudação apresenta a empresa e o que dá para resolver).
+ */
+export function smallTalkReply(
+  kind: SmallTalk,
+  ctx: { customerName: string | null; companyName: string; firstContact: boolean; lastAgentMessage?: string | null },
+): string {
+  const g = greetingFor(ctx.customerName);
+  let options: string[];
+  if (kind === 'greeting') {
+    options = ctx.firstContact
+      ? [
+          `Olá! Aqui é o atendimento da ${ctx.companyName}. Posso ver a sua fatura e 2ª via, o seu plano ou ajudar com a sua internet. Me conta o que você precisa?`,
+        ]
+      : [`Oi${g ? `, ${g.slice(0, -2)}` : ''}! Pode falar, estou por aqui.`, 'Oi! Estou por aqui, pode falar.'];
+  } else {
+    options = SMALL_TALK_REPLIES[kind].map((o, i) => (i === 0 && g ? capitalizeFirst(`${g}${o.charAt(0).toLowerCase()}${o.slice(1)}`) : o));
+  }
+  const last = ctx.lastAgentMessage?.trim();
+  return options.find((o) => o !== last) ?? options[0];
+}
+
+/**
+ * O que não é assunto do atendimento e não achou nada na base, quando a IA generativa não está disponível
+ * (reserva por regras). Primeira vez: apresenta o que dá para resolver. Depois: pede para reformular e
+ * oferece o atendente — nunca repete a apresentação palavra por palavra.
+ */
+export function outOfScopeReply(companyName: string, alreadyGreeted: boolean): string {
+  return alreadyGreeted
+    ? 'Não consegui entender bem o que você precisa. Pode me contar com outras palavras? Se preferir, escreva "atendente" que eu chamo alguém da equipe.'
+    : `Olá! Aqui é o atendimento da ${companyName}. Posso te ajudar com internet lenta, caindo ou sem conexão; fatura e 2ª via; o seu plano; e abrir ou acompanhar um chamado. Me conta o que você precisa?`;
 }
 
 export function scopeReply(customerName: string | null, companyName: string): string {

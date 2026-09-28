@@ -22,7 +22,9 @@ const DOCUMENT_ONLY = /^\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{4,14})\s*$/;
  */
 import { KEYWORD_RULES } from './mock-ai.provider';
 
-const LLM_TIMEOUT_MS = 15000; // 15 segundos por chamada
+// Por tentativa. Um modelo travado (fila do Google) não segura o turno: tenta o modelo alternativo antes
+// de cair para as regras — no pior caso ~16 s, e a resposta costuma vir da IA em vez da reserva.
+const LLM_TIMEOUT_MS = 8000;
 
 const NO_SPEECH_MARKER = '[SEM_FALA]';
 
@@ -85,11 +87,10 @@ export class GeminiProvider implements AIProvider {
           lastErr = err;
           const msg = err instanceof Error ? err.message : String(err);
           if (!TRANSIENT.test(msg) && !msg.includes('Timeout')) throw err;
-          // Se for timeout de fila do Google, falha rápido para acionar o FallbackAIProvider em vez de esperar mais modelos
-          if (msg.includes('Timeout')) throw err;
 
           this.logger.warn(`${model} indisponível/lento (${msg.slice(0, 80)}…) — tentando outro modelo.`);
-          if (QUOTA_EXHAUSTED.test(msg)) {
+          // Timeout ou cota: repetir o mesmo modelo só atrasa — vai direto para o próximo.
+          if (QUOTA_EXHAUSTED.test(msg) || msg.includes('Timeout')) {
             break;
           }
           if (attempt === 0 && i === 0) await new Promise((r) => setTimeout(r, 300));

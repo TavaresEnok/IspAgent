@@ -10,6 +10,11 @@ import { isHumanRequest } from '../agent/quick-flows';
 import { isWithinSupportHours } from '../agent/support-hours';
 import { normalizeDocument } from '../identity/identity-resolution.service';
 import { FlowEngine, FlowRuntime } from './flow-engine';
+import { interpretMenuChoice } from './menu-interpreter';
+import { MockAIProvider } from '../integrations/ai/mock-ai.provider';
+
+/** O simulador entende texto livre com as regras (sem gastar IA nem depender dela). */
+const rules = new MockAIProvider();
 import { FlowsService, sanitizeDefinition } from './flows.service';
 
 class CreateFlowDto {
@@ -132,6 +137,7 @@ export class FlowsController {
       }),
       isBusinessHours: () => (policy?.supportHours ? isWithinSupportHours(policy.supportHours) : null),
       isHumanRequest,
+      interpretMenu: async (input, options) => interpretMenuChoice((await rules.classifyIntents(input)).intents, options),
     };
 
     const engine = new FlowEngine(definition, 'simulacao', 0);

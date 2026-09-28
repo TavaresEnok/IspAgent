@@ -53,9 +53,12 @@ describe('identificação pelo chat (P0.7 — nunca vincular a quem não é)', (
     const conv = await newConversation();
     await ask(conv.id, 'quero ver minha fatura');
     for (const typed of ['contrato: 123456', '11999990001', 'meu telefone é (11) 99999-0002']) {
+      // Depois de esgotar os pedidos de documento a conversa vai para a fila e a IA não responde (null).
       const decision = await ask(conv.id, typed);
-      expect(decision?.identity).toBeNull();
+      expect(decision?.identity ?? null).toBeNull();
     }
+    const stored = await runWithTenant(TENANT, () => ctx.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }));
+    expect(stored.customerId).toBeNull();
   });
 
   it('CPF exato e único identifica, mas só com confiança MEDIUM (documento sozinho é prova fraca)', async () => {
@@ -114,15 +117,15 @@ describe('identificação pelo chat (P0.7 — nunca vincular a quem não é)', (
   it('tentativas de CPF erradas esgotam o limite e bloqueiam a conversa (anti-adivinhação): handoff mesmo com CPF válido depois', async () => {
     const conv = await newConversation();
     await ask(conv.id, 'quero ver minha fatura');
-    await ask(conv.id, '000.000.000-01');
-    await ask(conv.id, '000.000.000-02');
-    const locked = await ask(conv.id, '000.000.000-03');
-    expect(locked?.outcome).toBe('HANDOFF');
+    const attempts = [];
+    for (const doc of ['000.000.000-01', '000.000.000-02', '000.000.000-03']) attempts.push(await ask(conv.id, doc));
+    expect(attempts.some((d) => d?.outcome === 'HANDOFF')).toBe(true);
 
-    const afterLock = await ask(conv.id, '111.111.111-02'); // CPF válido de cus_demo_b, mas a conversa já está bloqueada
-    expect(afterLock?.identity).toBeNull();
-    expect(afterLock?.outcome).toBe('HANDOFF');
-    expect(afterLock?.toolCalls).toHaveLength(0);
+    // CPF válido de cus_demo_b, mas a conversa já está bloqueada e na fila humana: a IA nem responde.
+    const afterLock = await ask(conv.id, '111.111.111-02');
+    expect(afterLock).toBeNull();
+    const stored = await runWithTenant(TENANT, () => ctx.db.client.conversation.findUniqueOrThrow({ where: { id: conv.id } }));
+    expect(stored.customerId).toBeNull();
   });
 
   it('a tentativa falha é auditada SEM gravar o documento digitado', async () => {

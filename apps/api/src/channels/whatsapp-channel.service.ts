@@ -19,6 +19,28 @@ export interface WhatsAppConnectionView {
   /** API oficial */
   phoneNumberId: string | null;
   hasAccessToken: boolean;
+  /** Modo teste: a IA só responde a estes números. */
+  testMode: boolean;
+  allowedNumbers: string[];
+}
+
+/** Mensagem mais velha que isto quando chega (fila acumulada ao reconectar o número) não é respondida. */
+export const STALE_MESSAGE_SECONDS = 5 * 60;
+
+/**
+ * Chave de comparação de telefone brasileiro: sem o 55 e sem o nono dígito — "5511987654321",
+ * "11987654321" e "1187654321" são o mesmo número (o WhatsApp às vezes entrega sem o 9).
+ */
+export function phoneKey(raw: string): string {
+  let d = raw.replace(/\D/g, '');
+  if (d.startsWith('55') && d.length >= 12) d = d.slice(2);
+  if (d.length === 11 && d[2] === '9') d = d.slice(0, 2) + d.slice(3);
+  return d;
+}
+
+export function parseNumberList(numbers: string[] | string): string[] {
+  const list = Array.isArray(numbers) ? numbers : numbers.split(',');
+  return [...new Set(list.map((n) => n.replace(/\D/g, '')).filter((n) => n.length >= 10 && n.length <= 15))];
 }
 
 /** Nome de instância na Evolution: único por provedor e sem caracteres estranhos. */
@@ -73,7 +95,36 @@ export class WhatsAppChannelService {
       pushName,
       phoneNumberId: row?.provider === 'cloud' ? row.phoneNumberId : null,
       hasAccessToken: Boolean(row?.provider === 'cloud' && row.accessToken),
+      testMode: Boolean(row?.testMode),
+      allowedNumbers: row ? parseNumberList(row.allowedNumbers) : [],
     };
+  }
+
+  /**
+   * A IA pode responder esta mensagem? Não, se ela chegou atrasada (fila acumulada ao reconectar o número
+   * — responder conversa antiga assusta o cliente) ou se o modo teste está ligado e o número não está na
+   * lista. Mensagem recusada aqui não entra na fila nem vira conversa: o WhatsApp do provedor segue normal.
+   */
+  async accepts(tenantId: string, phone: string, sentAtSeconds?: number | null): Promise<{ ok: true } | { ok: false; reason: 'stale' | 'not_allowed' }> {
+    if (sentAtSeconds && Date.now() / 1000 - sentAtSeconds > STALE_MESSAGE_SECONDS) return { ok: false, reason: 'stale' };
+    const row = await this.get(tenantId);
+    if (!row?.testMode) return { ok: true };
+    const key = phoneKey(phone);
+    return parseNumberList(row.allowedNumbers).some((n) => phoneKey(n) === key) ? { ok: true } : { ok: false, reason: 'not_allowed' };
+  }
+
+  async saveTestMode(tenantId: string, input: { enabled: boolean; numbers: string[] }): Promise<WhatsAppConnectionView> {
+    const row = await this.get(tenantId);
+    if (!row) throw new BadRequestException('Conecte o WhatsApp antes de configurar o modo teste.');
+    const numbers = parseNumberList(input.numbers);
+    if (input.enabled && numbers.length === 0) {
+      throw new BadRequestException('Com o modo teste ligado, informe ao menos um número que a IA pode atender.');
+    }
+    await this.prisma.whatsAppConnection.update({
+      where: { tenantId },
+      data: { testMode: input.enabled, allowedNumbers: numbers.join(',') },
+    });
+    return this.view(tenantId);
   }
 
   /**
