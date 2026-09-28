@@ -1,6 +1,8 @@
 import { Injectable, Logger, Module, Optional } from '@nestjs/common';
 import { currentTenantId } from '../common/tenant-context';
-import { WahaClient } from './waha.client';
+import { tryDecryptSecret } from '../common/secret-cipher';
+import { EvolutionClient } from './evolution.client';
+import { WhatsAppChannelService } from './whatsapp-channel.service';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export type WhatsAppDelivery = { delivered: true; messageId?: string } | { delivered: false; reason: string };
@@ -26,49 +28,66 @@ export function isValidMetaSignature(rawBody: Buffer | undefined, header: string
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
+type Cloud = { token: string; phoneNumberId: string };
+
 /**
- * WhatsApp Cloud API (Meta). A resposta do webhook não chega ao cliente: toda mensagem de saída precisa
- * de POST /{phone-number-id}/messages. Mídia recebida vem só como id — o conteúdo é baixado aqui.
+ * Envio de WhatsApp do PROVEDOR ATUAL. Cada provedor tem o seu canal (tela "WhatsApp"): número por QR Code
+ * (instância da Evolution) ou API oficial da Meta (número + token dele). O `.env` (um número só) vale
+ * apenas para o provedor de `ISPAGENT_WHATSAPP_TENANT_ID` — instalações antigas — ou fora de um provedor
+ * (uso isolado nos testes). Nunca manda mensagem de um provedor pelo número de outro.
+ *
+ * Na API oficial a resposta do webhook não chega ao cliente: toda mensagem de saída é POST
+ * /{phone-number-id}/messages. Mídia recebida vem só como id — o conteúdo é baixado aqui.
  */
 @Injectable()
 export class WhatsAppCloudClient {
   private readonly logger = new Logger(WhatsAppCloudClient.name);
 
-  /** Sem a API oficial configurada, o número conectado por QR Code (WAHA) do tenant atual entrega. */
-  constructor(@Optional() private readonly waha?: WahaClient) {}
+  constructor(@Optional() private readonly channels?: WhatsAppChannelService) {}
 
-  private wahaForCurrentTenant(): WahaClient | null {
-    const tenantId = currentTenantId();
-    return this.waha && tenantId && this.waha.isAvailableFor(tenantId) ? this.waha : null;
-  }
-
-  /** Há algum transporte de WhatsApp para o tenant atual (API oficial ou WAHA). */
-  canSend(): boolean {
-    return this.isConfigured() || this.wahaForCurrentTenant() !== null;
-  }
-
-  private get config() {
+  private get env() {
     return {
       token: process.env.ISPAGENT_WHATSAPP_ACCESS_TOKEN ?? '',
       phoneNumberId: process.env.ISPAGENT_WHATSAPP_PHONE_NUMBER_ID ?? '',
+      tenantId: process.env.ISPAGENT_WHATSAPP_TENANT_ID ?? '',
       apiVersion: process.env.ISPAGENT_WHATSAPP_API_VERSION || 'v21.0',
     };
   }
 
+  /** API oficial configurada no `.env` (instalação antiga, um número). */
   isConfigured(): boolean {
-    const { token, phoneNumberId } = this.config;
+    const { token, phoneNumberId } = this.env;
     return Boolean(token && phoneNumberId);
   }
 
-  async sendText(to: string, body: string): Promise<WhatsAppDelivery> {
-    const { token, phoneNumberId, apiVersion } = this.config;
-    if (!this.isConfigured()) {
-      const waha = this.wahaForCurrentTenant();
-      if (waha) return waha.sendText(to, body);
-      return { delivered: false, reason: 'WhatsApp não configurado (ISPAGENT_WHATSAPP_ACCESS_TOKEN / ISPAGENT_WHATSAPP_PHONE_NUMBER_ID).' };
+  /** Canal do provedor atual: `cloud` (credenciais), `evolution` (instância) ou nenhum. */
+  private async route(): Promise<{ kind: 'cloud'; cloud: Cloud } | { kind: 'evolution'; instance: string } | null> {
+    const tenantId = currentTenantId();
+    if (this.channels && tenantId) {
+      const row = await this.channels.get(tenantId);
+      if (row?.provider === 'evolution' && row.instanceName) return { kind: 'evolution', instance: row.instanceName };
+      if (row?.provider === 'cloud' && row.phoneNumberId) {
+        const token = tryDecryptSecret(row.accessToken);
+        if (token) return { kind: 'cloud', cloud: { token, phoneNumberId: row.phoneNumberId } };
+      }
     }
+    const env = this.env;
+    const envAllowed = !this.channels || !tenantId || tenantId === env.tenantId;
+    return this.isConfigured() && envAllowed ? { kind: 'cloud', cloud: { token: env.token, phoneNumberId: env.phoneNumberId } } : null;
+  }
+
+  /** Há um canal de WhatsApp para o provedor atual. */
+  async canSend(): Promise<boolean> {
+    return (await this.route()) !== null;
+  }
+
+  async sendText(to: string, body: string): Promise<WhatsAppDelivery> {
+    const route = await this.route();
+    if (!route) return { delivered: false, reason: 'WhatsApp não configurado para este provedor (tela "WhatsApp").' };
+    if (route.kind === 'evolution') return this.channels!.evolution.sendText(route.instance, to, body);
+    const { token, phoneNumberId } = route.cloud;
     try {
-      const res = await fetch(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+      const res = await fetch(`https://graph.facebook.com/${this.env.apiVersion}/${phoneNumberId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: body.slice(0, 4096) } }),
@@ -85,12 +104,14 @@ export class WhatsAppCloudClient {
     }
   }
 
+  /** Mídia da API oficial, baixada com o token do provedor atual. */
   async downloadMedia(mediaId: string | undefined): Promise<{ base64: string; mimeType: string } | null> {
-    const { token, apiVersion } = this.config;
-    if (!this.isConfigured() || !mediaId || !/^\d{1,40}$/.test(mediaId)) return null;
+    const route = await this.route();
+    if (route?.kind !== 'cloud' || !mediaId || !/^\d{1,40}$/.test(mediaId)) return null;
+    const { token } = route.cloud;
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const metaRes = await fetch(`https://graph.facebook.com/${apiVersion}/${mediaId}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+      const metaRes = await fetch(`https://graph.facebook.com/${this.env.apiVersion}/${mediaId}`, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!metaRes.ok) return null;
       const meta = (await metaRes.json()) as { url?: string; mime_type?: string; file_size?: number };
       if (!meta.url || (meta.file_size ?? 0) > MAX_MEDIA_BYTES) return null;
@@ -110,7 +131,7 @@ export class WhatsAppCloudClient {
 }
 
 @Module({
-  providers: [WhatsAppCloudClient, WahaClient],
-  exports: [WhatsAppCloudClient, WahaClient],
+  providers: [WhatsAppCloudClient, WhatsAppChannelService, EvolutionClient],
+  exports: [WhatsAppCloudClient, WhatsAppChannelService, EvolutionClient],
 })
 export class WhatsAppCloudModule {}

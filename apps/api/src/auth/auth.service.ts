@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'node:crypto';
@@ -80,7 +80,16 @@ export class AuthService {
     }
 
     const user = matches[0];
+    await this.assertTenantActive(user.tenantId);
     return this.issueTokenPair({ sub: user.id, tenantId: user.tenantId, role: user.role, email: user.email });
+  }
+
+  /** Provedor suspenso (plataforma) não entra no painel — nem com senha certa, nem renovando sessão. */
+  private async assertTenantActive(tenantId: string) {
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { status: true } });
+    if (tenant?.status !== 'ACTIVE') {
+      throw new ForbiddenException({ statusCode: 403, code: 'TENANT_SUSPENDED', message: 'Acesso suspenso. Fale com o suporte da plataforma.' });
+    }
   }
 
   async refresh(refreshToken: string) {
@@ -122,6 +131,7 @@ export class AuthService {
     });
     if (consumed.count === 0) throw new UnauthorizedException('Refresh token expirado ou revogado');
 
+    await this.assertTenantActive(user.tenantId);
     return this.issueTokenPair({ sub: user.id, tenantId: user.tenantId, role: user.role, email: user.email });
   }
 

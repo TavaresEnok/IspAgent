@@ -8,13 +8,13 @@ import { ERPModule } from '../integrations/erp/erp.module';
 import { AiProviderModule } from '../integrations/ai/ai-provider.module';
 import { WhatsAppCloudModule } from './whatsapp-cloud.client';
 import { IncidentNotifierService } from './incident-notifier.service';
-import { WahaController, WahaWebhookController } from './waha.controller';
+import { EvolutionWebhookController, WhatsAppWebController } from './whatsapp-web.controller';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
-import { ChatwootClient, ChatwootWebhookController } from './chatwoot';
+import { ChatwootClient, ChatwootConnectionController, ChatwootConnectionService, ChatwootWebhookController } from './chatwoot';
 
 @Module({
   imports: [ConversationModule, AgentModule, PulseISPModule, ERPModule, AiProviderModule, WhatsAppCloudModule],
-  controllers: [WebchatController, WhatsAppController, WhatsAppBroadcastController, WahaController, WahaWebhookController, ChatwootWebhookController],
-  providers: [IncidentNotifierService, WhatsAppInboundService, ChatwootClient],
+  controllers: [WebchatController, WhatsAppController, WhatsAppBroadcastController, WhatsAppWebController, EvolutionWebhookController, ChatwootWebhookController, ChatwootConnectionController],
+  providers: [IncidentNotifierService, WhatsAppInboundService, ChatwootClient, ChatwootConnectionService],
 })
 export class ChannelsModule {}

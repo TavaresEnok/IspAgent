@@ -1,6 +1,8 @@
 import { Controller, Get } from '@nestjs/common';
 import { currentTenantId } from '../common/tenant-context';
 import { AiConfigService } from '../integrations/ai/ai-config.service';
+import { ErpConnectionService } from '../integrations/erp/erp-connection.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 /**
  * Tela "Integrações" (seção 10.1) — status HONESTO de cada adapter, o mesmo espírito de
@@ -8,13 +10,22 @@ import { AiConfigService } from '../integrations/ai/ai-config.service';
  */
 @Controller('integrations/status')
 export class IntegrationsStatusController {
-  constructor(private readonly aiConfig: AiConfigService) {}
+  constructor(
+    private readonly aiConfig: AiConfigService,
+    private readonly erp: ErpConnectionService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Get()
   async status() {
-    const erpProvider = process.env.ISPAGENT_ERP_PROVIDER ?? 'demo';
+    const tenantId = currentTenantId() as string;
+    // Tudo por provedor (telas ERP, WhatsApp e Chatwoot): cada provedor vê o SEU status.
+    const erpProvider = (await this.erp.resolve(tenantId)).provider;
     const pulseIspEnabled = process.env.ISPAGENT_PULSEISP_ENABLED === 'true';
-    const whatsappEnabled = process.env.ISPAGENT_CHANNEL_WHATSAPP_ENABLED === 'true';
+    const [wa, cw] = await Promise.all([
+      this.prisma.whatsAppConnection.findUnique({ where: { tenantId } }),
+      this.prisma.chatwootConnection.findUnique({ where: { tenantId }, select: { baseUrl: true } }),
+    ]);
 
     // Config de IA vem do banco (tela "IA" do painel), não mais de env var fixada no boot — ver
     // AiProviderResolverService.
@@ -27,7 +38,7 @@ export class IntegrationsStatusController {
       erp: {
         provider: erpProvider,
         mode: erpProvider === 'demo' ? 'DEMO' : 'LIVE',
-        status: erpProvider === 'demo' ? 'VALIDADO (mock real contra Postgres)' : 'ESTRUTURADO, NÃO VALIDADO',
+        status: erpProvider === 'demo' ? 'DEMONSTRAÇÃO (base de exemplo)' : 'SGP REAL — configurado na tela ERP',
       },
       ai: {
         provider: aiLive ? ai.provider : 'mock',
@@ -42,8 +53,12 @@ export class IntegrationsStatusController {
         status: pulseIspEnabled ? 'VALIDADO (mock)' : 'DESLIGADO — produto funciona sem PulseISP (seção 3.2)',
       },
       whatsapp: {
-        enabled: whatsappEnabled,
-        status: 'INDISPONÍVEL — sem credencial Meta validada nesta sessão',
+        enabled: Boolean(wa),
+        status: !wa ? 'NÃO CONFIGURADO — conecte na tela WhatsApp' : wa.provider === 'cloud' ? 'API OFICIAL (Meta)' : 'QR CODE (Evolution)',
+      },
+      chatwoot: {
+        enabled: Boolean(cw),
+        status: cw ? `CONECTADO — ${cw.baseUrl}` : 'NÃO CONFIGURADO — tela Chatwoot',
       },
       webchat: { enabled: true, status: 'VALIDADO — canal obrigatório do DEMO' },
     };

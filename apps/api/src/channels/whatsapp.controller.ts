@@ -25,6 +25,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { runWithTenant } from '../common/tenant-context';
 import { WhatsAppCloudClient, isValidMetaSignature, whatsappEnabled } from './whatsapp-cloud.client';
 import { Incoming, WhatsAppInboundService } from './whatsapp-inbound.service';
+import { WhatsAppChannelService } from './whatsapp-channel.service';
+import { TenantAccessService } from '../platform/tenant-access.service';
 
 
 interface MetaMessage {
@@ -39,7 +41,7 @@ interface MetaMessage {
 }
 
 interface MetaWebhookBody {
-  entry?: Array<{ changes?: Array<{ value?: { messages?: MetaMessage[] } }> }>;
+  entry?: Array<{ changes?: Array<{ value?: { metadata?: { phone_number_id?: string }; messages?: MetaMessage[] } }> }>;
 }
 
 class BroadcastDto {
@@ -70,6 +72,8 @@ export class WhatsAppController {
     private readonly prisma: PrismaService,
     private readonly inbound: WhatsAppInboundService,
     private readonly whatsapp: WhatsAppCloudClient,
+    private readonly channels: WhatsAppChannelService,
+    private readonly access: TenantAccessService,
   ) {}
 
   /** Validação do webhook pela Meta: devolve `hub.challenge` se o verify token bater. */
@@ -98,20 +102,29 @@ export class WhatsAppController {
     if (!whatsappEnabled()) throw new NotFoundException();
     if (!isValidMetaSignature(req.rawBody, signature)) throw new ForbiddenException('Assinatura inválida.');
 
-    const tenantId = process.env.ISPAGENT_WHATSAPP_TENANT_ID;
-    if (!tenantId || !(await this.prisma.tenant.findUnique({ where: { id: tenantId } }))) {
-      this.logger.error('ISPAGENT_WHATSAPP_TENANT_ID ausente ou inexistente — mensagem do WhatsApp descartada.');
-      return { status: 'ignored' };
-    }
+    for (const change of (body?.entry ?? []).flatMap((e) => e?.changes ?? [])) {
+      const value = change?.value;
+      // Cada provedor tem o seu número: o phone_number_id de destino diz de quem é a mensagem. O `.env`
+      // (um número só) vale para instalações antigas.
+      const phoneNumberId = String(value?.metadata?.phone_number_id ?? '');
+      const byNumber = /^\d{5,30}$/.test(phoneNumberId) ? await this.channels.cloudByPhoneNumberId(phoneNumberId) : null;
+      const envNumber = process.env.ISPAGENT_WHATSAPP_PHONE_NUMBER_ID ?? '';
+      const legacy = !phoneNumberId || phoneNumberId === envNumber ? process.env.ISPAGENT_WHATSAPP_TENANT_ID : undefined;
+      const tenantId = byNumber?.tenantId ?? legacy;
+      if (!tenantId || !(await this.prisma.tenant.findUnique({ where: { id: tenantId } }))) {
+        this.logger.error('Mensagem do WhatsApp para um número sem provedor configurado — descartada.');
+        continue;
+      }
+      if (!(await this.access.isActive(tenantId))) continue;
 
-    const messages = (body?.entry ?? []).flatMap((e) => e?.changes ?? []).flatMap((c) => c?.value?.messages ?? []);
-    for (const msg of messages) {
-      const from = String(msg.from ?? '').replace(/\D/g, '');
-      if (!/^\d{10,15}$/.test(from)) continue;
-      try {
-        await runWithTenant(tenantId, () => this.process(tenantId, from, msg));
-      } catch (err) {
-        this.logger.error(`Falha ao processar mensagem do WhatsApp: ${err instanceof Error ? err.message : err}`);
+      for (const msg of value?.messages ?? []) {
+        const from = String(msg.from ?? '').replace(/\D/g, '');
+        if (!/^\d{10,15}$/.test(from)) continue;
+        try {
+          await runWithTenant(tenantId, () => this.process(tenantId, from, msg));
+        } catch (err) {
+          this.logger.error(`Falha ao processar mensagem do WhatsApp: ${err instanceof Error ? err.message : err}`);
+        }
       }
     }
     // A Meta só precisa do 200; nada da conversa volta aqui.

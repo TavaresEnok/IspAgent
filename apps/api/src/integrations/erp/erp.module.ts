@@ -5,34 +5,27 @@ import { IXCAdapter } from './ixc.adapter';
 import { SGPAdapter } from './sgp.adapter';
 import { SgpClientService } from './sgp-client.service';
 import { SgpController } from './sgp.controller';
+import { ErpConnectionService } from './erp-connection.service';
+import { ErpConnectionController } from './erp-connection.controller';
+import { TenantErpAdapter } from './tenant-erp.adapter';
 
 /**
- * Seleciona o ERPAdapter concreto por `ISPAGENT_ERP_PROVIDER` (demo|ixc|sgp — default demo). Nenhum
- * consumidor (tools, agent) importa `MockERPAdapter`/`IXCAdapter`/`SGPAdapter` diretamente — só o token
- * `ERP_ADAPTER`, para trocar de provider sem tocar em regra de negócio.
+ * `ERP_ADAPTER` = `TenantErpAdapter`: o ERP é escolhido POR PROVEDOR (tela "ERP", tabela
+ * `erp_connections`), a cada chamada. Nenhum consumidor (tools, agent) importa `MockERPAdapter`/
+ * `SGPAdapter` diretamente — só o token, para trocar de ERP sem tocar em regra de negócio. IXC continua
+ * não implementado (sem documentação validada) e não é oferecido na tela.
  */
 @Module({
-  controllers: [SgpController],
+  controllers: [SgpController, ErpConnectionController],
   providers: [
     SgpClientService,
+    ErpConnectionService,
     MockERPAdapter,
     IXCAdapter,
     SGPAdapter,
-    {
-      provide: ERP_ADAPTER,
-      useFactory: (mock: MockERPAdapter, ixc: IXCAdapter, sgp: SGPAdapter) => {
-        switch (process.env.ISPAGENT_ERP_PROVIDER) {
-          case 'ixc':
-            return ixc;
-          case 'sgp':
-            return sgp;
-          default:
-            return mock;
-        }
-      },
-      inject: [MockERPAdapter, IXCAdapter, SGPAdapter],
-    },
+    TenantErpAdapter,
+    { provide: ERP_ADAPTER, useExisting: TenantErpAdapter },
   ],
-  exports: [ERP_ADAPTER, SgpClientService, SGPAdapter],
+  exports: [ERP_ADAPTER, SgpClientService, SGPAdapter, ErpConnectionService],
 })
 export class ERPModule {}

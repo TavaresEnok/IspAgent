@@ -47,6 +47,16 @@ export function configureApp(app: NestExpressApplication): void {
       mediaJson(req, res, next);
     },
   );
+  // Evolution (WhatsApp por QR Code) manda áudio/imagem embutidos em base64 no próprio evento.
+  const evolutionJson = json({ limit: '12mb' });
+  app.use('/public/evolution/webhook/:instance/:secret', function mediaJsonParserEvolution(req: Parameters<typeof evolutionJson>[0], res: Parameters<typeof evolutionJson>[1], next: Parameters<typeof evolutionJson>[2]) {
+    evolutionJson(req, res, next);
+  });
+  // Logo da marca (data URL até ~300 KB) e fluxos grandes (até 200 blocos) passam do padrão de 100 KB.
+  const settingsJson = json({ limit: '1mb' });
+  app.use(['/tenant/branding', '/flows/:id', '/flows/simulate'], function mediaJsonParserSettings(req: Parameters<typeof settingsJson>[0], res: Parameters<typeof settingsJson>[1], next: Parameters<typeof settingsJson>[2]) {
+    settingsJson(req, res, next);
+  });
 
   app.use(helmet());
   app.enableCors({

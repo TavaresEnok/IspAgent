@@ -29,6 +29,9 @@ const TENANT_SCOPED_MODELS = new Set([
   'SatisfactionSurvey',
   'IncidentNotification',
   'ConversationFlow',
+  'ErpConnection',
+  'WhatsAppConnection',
+  'ChatwootConnection',
 ]);
 
 const READ_OPS = new Set([

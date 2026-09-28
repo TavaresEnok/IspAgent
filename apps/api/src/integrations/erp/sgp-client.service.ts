@@ -1,5 +1,7 @@
 import * as https from 'https';
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, forwardRef } from '@nestjs/common';
+import { currentTenantId } from '../../common/tenant-context';
+import { ErpConnectionService } from './erp-connection.service';
 
 export interface SgpConfig {
   baseUrl: string;
@@ -29,9 +31,21 @@ export class SgpError extends Error {
 export class SgpClientService {
   private readonly logger = new Logger(SgpClientService.name);
 
-  constructor(@Optional() private readonly transport: typeof https.request = https.request) {}
+  constructor(
+    @Optional() private readonly transport: typeof https.request = https.request,
+    @Optional() @Inject(forwardRef(() => ErpConnectionService)) private readonly connections?: ErpConnectionService,
+  ) {}
 
-  getConfig(): SgpConfig {
+  /**
+   * Credenciais do SGP do PROVEDOR ATUAL (tela "ERP", cifradas no banco). Sem o serviço de conexões
+   * (uso isolado, testes), cai no `.env` — nunca para escolher o SGP de outro provedor.
+   */
+  async getConfig(): Promise<SgpConfig> {
+    if (this.connections) {
+      const tenantId = currentTenantId();
+      const cfg = tenantId ? await this.connections.sgpConfig(tenantId) : null;
+      return cfg ?? { baseUrl: '', token: '', app: '' };
+    }
     return {
       // Credenciais só por variável de ambiente (.env, fora do git) — nunca como valor padrão no código.
       baseUrl: (process.env.ISPAGENT_SGP_BASE_URL ?? '').trim().replace(/\/+$/, ''),
@@ -41,8 +55,8 @@ export class SgpClientService {
     };
   }
 
-  isConfigured(): boolean {
-    const cfg = this.getConfig();
+  async isConfigured(): Promise<boolean> {
+    const cfg = await this.getConfig();
     return Boolean(cfg.baseUrl && cfg.token && cfg.app);
   }
 
@@ -51,9 +65,9 @@ export class SgpClientService {
     path: string,
     params: Record<string, string | number | boolean | null | undefined> = {},
   ): Promise<T> {
-    const cfg = this.getConfig();
+    const cfg = await this.getConfig();
     if (!cfg.baseUrl || !cfg.token || !cfg.app) {
-      throw new SgpError('SGP não configurado: defina ISPAGENT_SGP_BASE_URL, ISPAGENT_SGP_TOKEN e ISPAGENT_SGP_APP.');
+      throw new SgpError('SGP não configurado para este provedor (tela "ERP" do painel).');
     }
 
     const cleanParams: Record<string, string> = {

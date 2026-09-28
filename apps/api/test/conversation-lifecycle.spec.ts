@@ -8,6 +8,9 @@ import { RealtimeEventsService } from '../src/events/events.service';
 import { WhatsAppCloudClient } from '../src/channels/whatsapp-cloud.client';
 import { WhatsAppController } from '../src/channels/whatsapp.controller';
 import { WhatsAppInboundService } from '../src/channels/whatsapp-inbound.service';
+import { WhatsAppChannelService } from '../src/channels/whatsapp-channel.service';
+import { EvolutionClient } from '../src/channels/evolution.client';
+import { TenantAccessService } from '../src/platform/tenant-access.service';
 import { AgentOrchestratorService } from '../src/agent/agent-orchestrator.service';
 import { AiProviderResolverService } from '../src/integrations/ai/ai-provider-resolver.service';
 import { runWithTenant } from '../src/common/tenant-context';
@@ -129,7 +132,13 @@ describe('encerramento automático de conversa', () => {
         { resolve: async () => ({}) } as unknown as AiProviderResolverService,
         cloud,
       );
-      const controller = new WhatsAppController(prisma, inbound, cloud);
+      const controller = new WhatsAppController(
+        prisma,
+        inbound,
+        cloud,
+        new WhatsAppChannelService(prisma, new EvolutionClient()),
+        new TenantAccessService(prisma),
+      );
       const body = { entry: [{ changes: [{ value: { messages: [{ from: conv.channelUserId, type: 'text', text: { body: '5' } }] } }] }] };
       const rawBody = Buffer.from(JSON.stringify(body));
       const signature = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;

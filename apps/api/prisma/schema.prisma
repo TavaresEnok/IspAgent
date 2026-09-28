@@ -45,6 +45,23 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
+  /// Endereço público do provedor (Web Chat, login com a marca): `/webchat?p=<slug>`.
+  slug                     String? @unique
+  /// Domínio próprio (ex.: atendimento.provedor.com.br) → mesma marca, sem precisar do slug.
+  customDomain             String? @unique
+  /// ACTIVE | SUSPENDED — suspenso não entra no painel e não atende nos canais.
+  status                   String  @default("ACTIVE")
+  plan                     String  @default("basic")
+  /// Conversas novas por mês (null = sem limite). Passou do limite: a IA não atende, vai para humano.
+  monthlyConversationLimit Int?
+  /// Operadores ativos (null = sem limite).
+  maxUsers                 Int?
+  // White label
+  brandName                String?
+  brandColor               String?
+  /// Logo como data URL (PNG/JPEG/SVG/WebP, até ~200 KB).
+  brandLogo                String?
+
   users              User[]
   customers          Customer[]
   policyConfig       TenantPolicyConfig?
@@ -59,6 +76,9 @@ model Tenant {
   surveys            SatisfactionSurvey[]
   incidentNotices    IncidentNotification[]
   flows              ConversationFlow[]
+  erpConnection      ErpConnection?
+  whatsappConnection WhatsAppConnection?
+  chatwootConnection ChatwootConnection?
 
   @@map("tenants")
 }
@@ -147,6 +167,51 @@ model AiProviderCredential {
 
 // Como o ISPAgent se conecta ao PulseISP deste tenant (login de leitura no PulseISP, configurado pela
 // tela "PulseISP" do painel). `password` é gravada CIFRADA (mesmo esquema de `apiKey` acima).
+/// ERP do provedor (SGP...). Credencial cifrada (secret-cipher). `demo` = base de demonstração local.
+model ErpConnection {
+  tenantId  String   @id
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  provider  String   @default("demo")
+  baseUrl   String?
+  app       String?
+  token     String?
+  updatedAt DateTime @updatedAt
+
+  @@map("erp_connections")
+}
+
+/// WhatsApp do provedor: `evolution` (QR Code, uma instância por provedor) ou `cloud` (API oficial da Meta).
+model WhatsAppConnection {
+  tenantId      String   @id
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  provider      String   @default("evolution")
+  /// Evolution: nome da instância (único na plataforma) e segredo do caminho do webhook (cifrado).
+  instanceName  String?  @unique
+  webhookSecret String?
+  /// Cloud API: número (phone_number_id da Meta, único) e token de acesso (cifrado).
+  phoneNumberId String?  @unique
+  accessToken   String?
+  updatedAt     DateTime @updatedAt
+
+  @@map("whatsapp_connections")
+}
+
+/// Chatwoot do provedor: o ISPAgent responde como Agent Bot. Webhook achado pelo hash do token do caminho.
+model ChatwootConnection {
+  tenantId         String   @id
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  baseUrl          String
+  publicUrl        String
+  accountId        String
+  botToken         String
+  webhookToken     String
+  webhookTokenHash String   @unique
+  widgetToken      String?
+  updatedAt        DateTime @updatedAt
+
+  @@map("chatwoot_connections")
+}
+
 model PulseIspConnection {
   tenantId  String   @id
   tenant    Tenant   @relation(fields: [tenantId], references: [id])

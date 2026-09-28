@@ -20,7 +20,9 @@ export default function ChatwootTestPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API_URL}/public/chatwoot/widget-config`)
+    // O provedor vem do endereço: /chatwoot-teste?p=apelido
+    const p = (new URLSearchParams(window.location.search).get('p') ?? '').trim().toLowerCase();
+    fetch(`${API_URL}/public/chatwoot/widget-config?t=${encodeURIComponent(p)}`)
       .then((r) => (r.ok ? (r.json() as Promise<{ baseUrl: string; websiteToken: string }>) : Promise.reject()))
       .then(({ baseUrl, websiteToken }) => {
         if (cancelled) return;

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { API_URL, ApiError, apiFetch, getAccessToken } from '@/lib/api';
+import { usePublicBrand } from '@/lib/branding';
 import { toWav16kMono } from './wav';
 
 function PixQrCode({ code }: { code: string }) {
@@ -67,7 +68,6 @@ interface WebchatConfig {
 
 // Tenant e nome exibido são de build (NEXT_PUBLIC_*): o mesmo widget serve qualquer provedor.
 const TENANT_ID = process.env.NEXT_PUBLIC_WEBCHAT_TENANT_ID || 'tnt_vibe';
-const BRAND = process.env.NEXT_PUBLIC_WEBCHAT_BRAND || 'Atendimento Virtual';
 /** Canais do simulador do painel (cliente real escolhido por um admin): exigem o login de admin. */
 const RESERVED_PREFIXES = ['pulse:', 'sgp:'];
 const isReserved = (id: string) => RESERVED_PREFIXES.some((p) => id.startsWith(p));
@@ -142,6 +142,11 @@ export default function WebChatPage() {
   const [config, setConfig] = useState<WebchatConfig | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [tenantId, setTenantId] = useState(TENANT_ID);
+  // Marca e provedor pelo endereço (?p=apelido, domínio próprio ou ?tenant= do widget antigo).
+  const { brand } = usePublicBrand();
+  useEffect(() => {
+    if (brand.tenantId) setTenantId(brand.tenantId);
+  }, [brand.tenantId]);
   const [session, setSession] = useState('');
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isStaff, setIsStaff] = useState(false);
@@ -557,7 +562,7 @@ export default function WebChatPage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-950 p-4 text-slate-100">
         <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-6 text-center shadow-2xl">
-          <h1 className="text-lg font-bold text-white">{BRAND}</h1>
+          <h1 className="text-lg font-bold text-white">{brand.name}</h1>
           <p className="mt-2 text-sm text-slate-400">O atendimento virtual não está disponível no momento.</p>
         </div>
       </main>
@@ -576,16 +581,16 @@ export default function WebChatPage() {
         <div className="w-full max-w-md rounded-2xl border border-slate-800/80 bg-slate-900/90 p-7 shadow-2xl backdrop-blur-xl">
           <div className="mb-6 flex items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 font-extrabold text-white shadow-lg shadow-cyan-500/20 text-xl">
-              {BRAND.charAt(0).toUpperCase()}
+              {brand.name.charAt(0).toUpperCase()}
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-white">{BRAND}</h1>
+              <h1 className="text-xl font-bold tracking-tight text-white">{brand.name}</h1>
               <p className="text-xs text-slate-400">Atendimento Virtual Inteligente 24/7</p>
             </div>
           </div>
 
           <p className="mb-6 text-sm text-slate-300 leading-relaxed">
-            Bem-vindo ao autoatendimento da {BRAND}. Consulte faturas, emita código PIX, verifique a sua conexão e fale
+            Bem-vindo ao autoatendimento da {brand.name}. Consulte faturas, emita código PIX, verifique a sua conexão e fale
             com a nossa equipe quando precisar.
           </p>
 
@@ -676,10 +681,10 @@ export default function WebChatPage() {
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-900/80 px-4 md:px-6 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 font-bold text-white shadow-md shadow-cyan-500/20 text-sm">
-            {BRAND.charAt(0).toUpperCase()}
+            {brand.name.charAt(0).toUpperCase()}
           </div>
           <div>
-            <h1 className="text-sm font-semibold text-white">{BRAND}</h1>
+            <h1 className="text-sm font-semibold text-white">{brand.name}</h1>
             <p className="text-[11px] text-slate-400">
               {isReserved(session) ? `Simulador — ${session}` : 'Assistente Virtual Inteligente'}
             </p>
@@ -847,7 +852,7 @@ export default function WebChatPage() {
               <span className="h-2 w-2 rounded-full bg-cyan-400 animate-ping" />
             </div>
             <span>
-              {uploadingReceipt ? 'Analisando o comprovante...' : sendingVoice ? 'Ouvindo o seu áudio...' : `${BRAND} está digitando...`}
+              {uploadingReceipt ? 'Analisando o comprovante...' : sendingVoice ? 'Ouvindo o seu áudio...' : `${brand.name} está digitando...`}
             </span>
           </div>
         )}
@@ -959,7 +964,7 @@ export default function WebChatPage() {
                 </div>
                 <h3 className="text-lg font-bold text-white">Obrigado pelo seu feedback!</h3>
                 <p className="mt-2 text-xs text-slate-400 leading-relaxed">
-                  Sua avaliação foi registrada e ajuda a {BRAND} a melhorar o atendimento.
+                  Sua avaliação foi registrada e ajuda a {brand.name} a melhorar o atendimento.
                 </p>
                 <button
                   onClick={() => setShowSurvey(false)}

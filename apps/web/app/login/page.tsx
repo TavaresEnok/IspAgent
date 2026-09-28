@@ -4,10 +4,10 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { apiLogin, setSession, ApiError } from '@/lib/api';
+import { BrandBadge, usePublicBrand } from '@/lib/branding';
 
 // Credenciais de demonstração só aparecem (e só pré-preenchem) num build marcado como DEMO.
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
-const BRAND = process.env.NEXT_PUBLIC_WEBCHAT_BRAND || 'ISPAgent';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,13 +17,15 @@ export default function LoginPage() {
   const [needsTenant, setNeedsTenant] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Entrando pelo endereço do provedor (?p=apelido ou domínio próprio), o provedor já é conhecido.
+  const { brand } = usePublicBrand();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const { accessToken, refreshToken } = await apiLogin(email, password, needsTenant ? tenantId.trim() : undefined);
+      const { accessToken, refreshToken } = await apiLogin(email, password, needsTenant ? tenantId.trim() : (brand.tenantId ?? undefined));
       setSession(accessToken, refreshToken);
       router.push('/dashboard');
     } catch (err) {
@@ -49,12 +51,10 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md rounded-2xl border border-slate-800/90 bg-slate-900/80 p-8 shadow-2xl backdrop-blur-xl">
         {/* Brand Header */}
         <div className="mb-6 flex items-center gap-3.5">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 font-extrabold text-white shadow-lg shadow-cyan-500/25 text-2xl">
-            {BRAND.charAt(0).toUpperCase()}
-          </div>
+          <BrandBadge brand={brand} className="h-12 w-12 text-2xl" />
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold tracking-tight text-white">{BRAND}</h1>
+              <h1 className="text-xl font-bold tracking-tight text-white">{brand.name}</h1>
               <span className="rounded-full bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 text-[10px] font-semibold text-cyan-400">
                 Staff NOC
               </span>

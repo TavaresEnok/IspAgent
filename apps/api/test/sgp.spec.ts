@@ -82,9 +82,9 @@ describe('SGPAdapter & SgpClientService', () => {
   });
 
   describe('SgpClientService', () => {
-    it('isConfigured retorna true quando variáveis estão preenchidas', () => {
-      expect(sgpClient.isConfigured()).toBe(true);
-      const cfg = sgpClient.getConfig();
+    it('isConfigured retorna true quando variáveis estão preenchidas', async () => {
+      expect(await sgpClient.isConfigured()).toBe(true);
+      const cfg = await sgpClient.getConfig();
       expect(cfg.baseUrl).toBeDefined();
       expect(cfg.token).toBeDefined();
       expect(cfg.app).toBeDefined();
@@ -92,7 +92,7 @@ describe('SGPAdapter & SgpClientService', () => {
 
     it('sem variáveis de ambiente não há SGP configurado (nenhuma credencial embutida no código)', async () => {
       delete process.env.ISPAGENT_SGP_TOKEN;
-      expect(sgpClient.isConfigured()).toBe(false);
+      expect(await sgpClient.isConfigured()).toBe(false);
       await expect(sgpClient.consultarPlanos()).rejects.toThrow(/não configurado/);
     });
 

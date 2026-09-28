@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { ROLE_HIERARCHY, type Role } from '@ispagent/shared';
 import { getAccessToken, apiLogout, apiFetch, API_URL } from '@/lib/api';
+import { BrandBadge, useTenantBrand } from '@/lib/branding';
 
 const BRAND = process.env.NEXT_PUBLIC_WEBCHAT_BRAND || 'ISPAgent';
 
@@ -25,6 +26,10 @@ const NAV: Array<{ href: string; label: string; icon: string; minRole: Role }> =
   { href: '/sgp', label: 'SGP', icon: '⚡', minRole: 'AGENT' },
   { href: '/whatsapp', label: 'WhatsApp', icon: '📱', minRole: 'TENANT_ADMIN' },
   { href: '/flows', label: 'Fluxos', icon: '🧩', minRole: 'SUPERVISOR' },
+  { href: '/erp', label: 'ERP', icon: '🗄️', minRole: 'TENANT_ADMIN' },
+  { href: '/chatwoot', label: 'Chatwoot', icon: '💭', minRole: 'TENANT_ADMIN' },
+  { href: '/marca', label: 'Marca', icon: '🎨', minRole: 'TENANT_ADMIN' },
+  { href: '/plataforma', label: 'Plataforma', icon: '🏢', minRole: 'SUPER_ADMIN' },
   { href: '/pulseisp', label: 'PulseISP', icon: '📡', minRole: 'TENANT_ADMIN' },
   { href: '/playground', label: 'Laboratório IA', icon: '🧪', minRole: 'TENANT_ADMIN' },
   { href: '/knowledge', label: 'Base de Conhecimento', icon: '📚', minRole: 'READ_ONLY' },
@@ -58,6 +63,7 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const [me, setMe] = useState<Me | null>(null);
   const [checked, setChecked] = useState(false);
+  const brand = useTenantBrand(checked);
   const [pendingHandoffs, setPendingHandoffs] = useState<number>(0);
   const [realtimeAlert, setRealtimeAlert] = useState<string | null>(null);
 
@@ -140,12 +146,10 @@ export default function StaffLayout({ children }: { children: React.ReactNode })
         <div>
           {/* Brand Header */}
           <div className={`mb-6 flex items-center gap-3 ${fullBleed ? 'justify-center' : 'px-2'}`}>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 font-extrabold text-white shadow-md shadow-cyan-500/20 text-lg">
-              {BRAND.charAt(0).toUpperCase()}
-            </div>
+            <BrandBadge brand={brand} />
             <div className={fullBleed ? 'hidden' : ''}>
               <div className="flex items-center gap-1.5">
-                <span className="font-bold text-base text-white tracking-tight">{BRAND}</span>
+                <span className="font-bold text-base text-white tracking-tight">{brand.name}</span>
               </div>
               <span className="text-[10px] font-medium text-cyan-400 uppercase tracking-wider">
                 Painel Staff NOC

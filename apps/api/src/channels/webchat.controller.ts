@@ -472,7 +472,8 @@ export class WebchatController {
 
   private async requireTenant(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-    if (!tenant) throw new NotFoundException('Tenant não encontrado');
+    // Suspenso responde igual a inexistente: o Web Chat público não revela a situação comercial.
+    if (!tenant || tenant.status !== 'ACTIVE') throw new NotFoundException('Tenant não encontrado');
     return tenant;
   }
 }

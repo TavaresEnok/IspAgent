@@ -16,9 +16,14 @@ export function createBillingTool(erp: ERPAdapter): ToolDefinition<{ contractId:
     name: 'BillingTool',
     action: 'billing.view',
     inputSchema: z.object({ contractId: z.string().min(1) }),
-    adapter: erp.name,
+    get adapter() {
+      return erp.name;
+    },
     capability: 'financial_status',
-    mode: erp.mode,
+    // Lido na hora: o ERP (e se é real ou demonstração) depende do provedor da requisição.
+    get mode() {
+      return erp.mode;
+    },
     execute: async (input) => {
       const financial = await erp.getFinancialStatus(input.contractId);
       if (!financial) {
@@ -72,9 +77,14 @@ export function createSupportGetTicketsTool(erp: ERPAdapter): ToolDefinition<{ c
     name: 'SupportTool',
     action: 'support.get_ticket',
     inputSchema: z.object({ contractId: z.string().min(1) }),
-    adapter: erp.name,
+    get adapter() {
+      return erp.name;
+    },
     capability: 'get_tickets',
-    mode: erp.mode,
+    // Lido na hora: o ERP (e se é real ou demonstração) depende do provedor da requisição.
+    get mode() {
+      return erp.mode;
+    },
     execute: async (input) => {
       const tickets = await erp.getSupportTickets(input.contractId);
       const facts = tickets.slice(0, 5).map((t) => ({
@@ -98,9 +108,14 @@ export function createSupportCreateTicketTool(
       category: z.string().min(1),
       description: z.string().min(1).max(2000),
     }),
-    adapter: erp.name,
+    get adapter() {
+      return erp.name;
+    },
     capability: 'create_ticket',
-    mode: erp.mode,
+    // Lido na hora: o ERP (e se é real ou demonstração) depende do provedor da requisição.
+    get mode() {
+      return erp.mode;
+    },
     execute: async (input, ctx) => {
       if (!ctx.idempotencyKey) {
         // Abertura de chamado é WRITE_LOW_RISK, mas ainda assim uma escrita (princípio 1.7): nunca
@@ -126,9 +141,14 @@ export function createPlanViewTool(erp: ERPAdapter): ToolDefinition<{ customerId
     name: 'PlanTool',
     action: 'plan.view',
     inputSchema: z.object({ customerId: z.string().min(1) }),
-    adapter: erp.name,
+    get adapter() {
+      return erp.name;
+    },
     capability: 'view_plan',
-    mode: erp.mode,
+    // Lido na hora: o ERP (e se é real ou demonstração) depende do provedor da requisição.
+    get mode() {
+      return erp.mode;
+    },
     execute: async (input) => {
       const [contracts, plans] = await Promise.all([erp.getContracts(input.customerId), erp.getPlans()]);
       const active = contracts.filter((c) => c.status === 'ACTIVE');
@@ -160,9 +180,14 @@ export function createPromiseToPayTool(erp: ERPAdapter): ToolDefinition<{ contra
     name: 'PromiseToPayTool',
     action: 'billing.unlock',
     inputSchema: z.object({ contractId: z.string().min(1), cpfcnpj: z.string().optional() }),
-    adapter: erp.name,
+    get adapter() {
+      return erp.name;
+    },
     capability: 'promise_to_pay',
-    mode: erp.mode,
+    // Lido na hora: o ERP (e se é real ou demonstração) depende do provedor da requisição.
+    get mode() {
+      return erp.mode;
+    },
     execute: async (input) => {
       if (!erp.requestPromiseToPay) {
         return { status: 'NOT_SUPPORTED', facts: [] };
@@ -185,9 +210,14 @@ export function createOpticalSignalTool(erp: ERPAdapter): ToolDefinition<{ contr
     name: 'OpticalSignalTool',
     action: 'network.diagnostic',
     inputSchema: z.object({ contractId: z.string().min(1) }),
-    adapter: erp.name,
+    get adapter() {
+      return erp.name;
+    },
     capability: 'optical_power',
-    mode: erp.mode,
+    // Lido na hora: o ERP (e se é real ou demonstração) depende do provedor da requisição.
+    get mode() {
+      return erp.mode;
+    },
     execute: async (input) => {
       if (!erp.getOpticalPower) {
         return { status: 'NOT_SUPPORTED', facts: [] };

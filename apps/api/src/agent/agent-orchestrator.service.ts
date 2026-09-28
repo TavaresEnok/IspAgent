@@ -50,6 +50,7 @@ import {
 } from './quick-flows';
 import { isWithinSupportHours, offHoursNotice } from './support-hours';
 import { FlowsService } from '../flows/flows.service';
+import { TenantAccessService } from '../platform/tenant-access.service';
 import { FlowEngine, FlowRuntime } from '../flows/flow-engine';
 import { FlowRunState } from '@ispagent/shared';
 
@@ -187,6 +188,7 @@ export class AgentOrchestratorService {
     @Optional() private readonly mirror?: PulseIspMirrorService,
     @Optional() identity?: IdentityResolutionService,
     @Optional() flows?: FlowsService,
+    @Optional() private readonly access?: TenantAccessService,
   ) {
     this.identity = identity ?? new IdentityResolutionService(db);
     this.flows = flows ?? new FlowsService(db);
@@ -212,6 +214,11 @@ export class AgentOrchestratorService {
 
     if (conversationRecord.status === 'HUMAN_ACTIVE') {
       return null;
+    }
+
+    // Limite mensal de conversas do plano: acima dele a IA não atende — um aviso e a fila humana, uma vez.
+    if (this.access && (await this.access.conversationBeyondLimit(tenantId, conversationRecord.createdAt))) {
+      return this.beyondPlanLimit(conversationRecord.id, tenantId);
     }
 
     // Fluxo visual ativo (construtor de fluxo do painel): ele conduz a conversa até passar para a IA,
@@ -1361,8 +1368,28 @@ export class AgentOrchestratorService {
   /** Nome de exibição do provedor: persona do tenant, senão o nome do tenant sem sufixos técnicos. */
   private async companyName(tenantId: string, personaName?: string | null): Promise<string> {
     if (personaName?.trim()) return personaName.trim();
-    const tenant = await this.db.client.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
-    return tenant?.name.replace(/\s*\(.*\)\s*$/, '').trim() || 'seu provedor de internet';
+    const tenant = await this.db.client.tenant.findUnique({ where: { id: tenantId }, select: { name: true, brandName: true } });
+    return tenant?.brandName?.trim() || tenant?.name.replace(/\s*\(.*\)\s*$/, '').trim() || 'seu provedor de internet';
+  }
+
+  /** Conversa acima do limite do plano: avisa e transfere na primeira mensagem; depois, silêncio (humano). */
+  private async beyondPlanLimit(conversationId: string, tenantId: string): Promise<AgentDecision | null> {
+    const answered = await this.db.client.message.count({ where: { conversationId, role: { in: ['AGENT', 'SYSTEM'] } } });
+    if (answered > 0) return null;
+    const policy = await this.db.client.tenantPolicyConfig.findUnique({ where: { tenantId } });
+    const ai = await this.aiResolver.resolve(tenantId);
+    return this.finishQuickTurn(
+      { tenantId, conversationId, ai, identity: null, reportedProblem: await this.lastCustomerRequest(conversationId, ''), supportHours: policy?.supportHours ?? null },
+      {
+        intent: 'OUTRO',
+        outcome: 'HANDOFF',
+        reply: 'Recebemos a sua mensagem! Um atendente da nossa equipe vai continuar o atendimento por aqui.',
+        handoff: {
+          reason: 'Limite mensal de conversas do plano atingido — atendimento automático desligado para esta conversa.',
+          suggestedNextAction: 'Atender manualmente (o provedor pode ampliar o plano com a plataforma).',
+        },
+      },
+    );
   }
 
   /**

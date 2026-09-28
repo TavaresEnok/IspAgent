@@ -2,14 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch, ApiError } from '@/lib/api';
+import { Field, Section, buttonPrimary, inputClass } from '@/components/settings';
 
 type Status = 'STOPPED' | 'STARTING' | 'SCAN_QR_CODE' | 'PASSKEY_REQUIRED' | 'PASSKEY_CONFIRMATION_REQUIRED' | 'WORKING' | 'FAILED';
 
 interface Session {
-  configured?: boolean;
+  provider: 'evolution' | 'cloud' | null;
+  evolutionAvailable: boolean;
   status: Status | null;
   phone: string | null;
   pushName: string | null;
+  phoneNumberId: string | null;
+  hasAccessToken: boolean;
 }
 
 const LABEL: Record<Status | 'NONE', { text: string; style: string }> = {
@@ -44,8 +48,8 @@ export default function WhatsAppPage() {
       const s = await apiFetch<Session>('/whatsapp-web/status');
       setSession(s);
       if (s.status === 'SCAN_QR_CODE') {
-        const img = await apiFetch<{ mimetype: string; data: string }>('/whatsapp-web/qr');
-        setQr(`data:${img.mimetype};base64,${img.data}`);
+        const img = await apiFetch<{ qr: string | null }>('/whatsapp-web/qr');
+        if (img.qr) setQr(img.qr);
       } else {
         setQr(null);
       }
@@ -77,9 +81,10 @@ export default function WhatsAppPage() {
     setBusy(key);
     setError(null);
     try {
-      const s = await apiFetch<Session>(`/whatsapp-web/${key}`, { method: 'POST' });
-      setSession((prev) => ({ ...prev, ...s }));
-      if (key === 'disconnect') setQr(null);
+      const s = await apiFetch<Session & { qr?: string | null }>(`/whatsapp-web/${key}`, { method: 'POST' });
+      // Logo após criar a instância a Evolution ainda pode dizer "fechada": com QR em mãos, já é leitura.
+      setSession({ ...s, status: s.qr && s.status !== 'WORKING' ? 'SCAN_QR_CODE' : s.status });
+      setQr(key === 'connect' ? (s.qr ?? null) : null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Falha na requisição');
     } finally {
@@ -89,17 +94,7 @@ export default function WhatsAppPage() {
 
   if (!session) return error ? <p className="text-sm text-red-600">{error}</p> : <p className="text-sm text-slate-400">Carregando...</p>;
 
-  if (session.configured === false) {
-    return (
-      <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-bold text-white">WhatsApp</h1>
-        <p className="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
-          A conexão do WhatsApp por QR Code não está habilitada para este provedor. Fale com o suporte do ISPAgent.
-        </p>
-      </div>
-    );
-  }
-
+  const cloud = session.provider === 'cloud';
   const label = LABEL[session.status ?? 'NONE'];
   const connected = session.status === 'WORKING';
   const waiting = WAITING.includes(session.status);
@@ -115,6 +110,19 @@ export default function WhatsAppPage() {
 
       {error && <p className="rounded-xl bg-red-500/10 px-4 py-2 text-sm text-red-300">{error}</p>}
 
+      {cloud && (
+        <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-200">
+          Em uso: <b>API oficial da Meta</b> (Phone Number ID {session.phoneNumberId}). Conectar por QR Code substitui a API oficial.
+        </p>
+      )}
+
+      {!session.evolutionAvailable && (
+        <p className="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
+          A conexão por QR Code não está disponível neste servidor. Use a API oficial abaixo.
+        </p>
+      )}
+
+      {session.evolutionAvailable && (
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <h2 className="mb-3 text-sm font-semibold text-slate-200">Status</h2>
@@ -177,6 +185,53 @@ export default function WhatsAppPage() {
           )}
         </section>
       </div>
+      )}
+
+      <CloudForm session={session} onSaved={setSession} />
     </div>
+  );
+}
+
+/** API oficial (WhatsApp Cloud): Phone Number ID + token; o webhook da Meta é o mesmo para todos. */
+function CloudForm({ session, onSaved }: { session: Session; onSaved: (s: Session) => void }) {
+  const [phoneNumberId, setPhoneNumberId] = useState(session.phoneNumberId ?? '');
+  const [accessToken, setAccessToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function save() {
+    if (session.provider === 'evolution' && session.status === 'WORKING' && !confirm('Trocar para a API oficial desconecta o número do QR Code. Continuar?')) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const s = await apiFetch<Session>('/whatsapp-web/cloud', { method: 'PUT', body: JSON.stringify({ phoneNumberId, accessToken: accessToken || undefined }) });
+      onSaved(s);
+      setAccessToken('');
+      setMsg({ ok: true, text: 'API oficial salva. As mensagens desse número já chegam à IA.' });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Falha ao salvar' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title="API oficial da Meta (opcional)">
+      <p className="text-xs text-slate-400">
+        Para quem tem o WhatsApp Business Platform. No app da Meta, aponte o webhook para <code>/public/whatsapp/webhook</code> deste servidor.
+      </p>
+      {msg && <p className={`rounded-lg px-3 py-2 text-sm ${msg.ok ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300'}`}>{msg.text}</p>}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <Field label="Phone Number ID">
+          <input className={inputClass} value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value.trim())} inputMode="numeric" />
+        </Field>
+        <Field label="Token de acesso" hint={session.hasAccessToken ? 'Já há um token salvo — deixe em branco para manter.' : undefined}>
+          <input className={inputClass} type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} placeholder={session.hasAccessToken ? '••••••••' : ''} />
+        </Field>
+      </div>
+      <button className={buttonPrimary} disabled={busy || !phoneNumberId} onClick={() => void save()}>
+        {busy ? 'Salvando…' : 'Salvar API oficial'}
+      </button>
+    </Section>
   );
 }
