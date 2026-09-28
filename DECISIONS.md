@@ -666,3 +666,27 @@ de fluxo por blocos (Design Studio) mostrou valor. O código do Tiledesk (MIT) f
   O bot só responde conversas `pending`; na transferência ela vai para `open` com a etiqueta do setor e o
   ISPAgent não fala por cima do atendente. Conversas do Chatwoot entram como `WEBCHAT` (`cw:<conta>:<id>`),
   sem identificação pelo telefone (não verificado) — só por documento.
+
+## 2026-09-28 — SaaS multi-provedor, Evolution no lugar do WAHA e migração de servidor
+
+- **Configuração por provedor no banco, não no `.env`:** ERP (`erp_connections`), WhatsApp
+  (`whatsapp_connections`) e Chatwoot (`chatwoot_connections`), com tokens cifrados (AES-256-GCM). As variáveis
+  antigas do `.env` servem só de bootstrap único (`ISPAGENT_ERP_BOOTSTRAP_TENANT_ID`, `ISPAGENT_CHATWOOT_*`):
+  criam a linha se ela não existir e daí em diante vale a tela do painel. Sem configuração, o provedor fica em
+  demonstração — nunca cai no ERP de outro provedor.
+- **Evolution API em vez de WAHA:** o WAHA Core tem uma sessão por servidor; a Evolution (gratuita, v2.3.7)
+  tem uma instância por provedor (`isp-<tenant>`). O webhook de cada instância carrega um segredo próprio no
+  caminho (`/public/evolution/webhook/:instancia/:segredo`, comparação em tempo constante) e o tenant sai da
+  instância, nunca do corpo. Sem porta pública: ISPAgent e Evolution se falam pela rede `ispagent_default`.
+  API oficial da Meta continua possível, roteada por `phone_number_id` para o provedor dono do número.
+- **White label em runtime:** nome, cor, logo (imagem embutida ≤ 300 KB, só png/jpeg/webp/svg) e apelido
+  público (`?p=apelido`) ou domínio próprio (Host). A IA também se apresenta com o nome da marca.
+- **Painel da plataforma (SUPER_ADMIN, tenant `tnt_platform`):** criar provedor com o primeiro admin (senha
+  inicial mostrada uma vez), suspender (derruba sessões, login e Web Chat recusados), plano, limites e domínio.
+- **Limites do plano:** conversas/mês (acima do limite: um aviso e a conversa vai para a fila humana, a IA não
+  responde mais) e operadores ativos (cadastro/reativação recusados).
+- **Servidor novo (28/09):** tudo migrou para a VM `10.10.0.26` na infraestrutura Proxmox do projeto de
+  câmeras (S2Cam). HTTPS pela Gateway da S2Cam (`ispa.ajustconsulting.com.br`: `/` → painel :3010,
+  `/backend/` → API :3001, certificado Let's Encrypt renovado pelo `renew.sh` da Gateway). O arquivo
+  `ispa.conf` é o único item do ISPAgent na Gateway — nada do projeto de câmeras é alterado. O SGP da Vibe
+  libera por IP: o IP de saída novo é `177.104.156.25`.

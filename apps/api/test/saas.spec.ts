@@ -163,8 +163,12 @@ describe('SaaS multi-provedor', () => {
 
     it('conversa acima do limite mensal: um aviso, fila humana, depois silêncio', async () => {
       const access = new TenantAccessService(ctx.prisma);
-      const count = await ctx.prisma.conversation.count({ where: { tenantId: ALPHA, createdAt: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) } } });
-      await ctx.prisma.tenant.update({ where: { id: ALPHA }, data: { monthlyConversationLimit: Math.max(1, count) } });
+      // Ocupa a cota do mês: uma conversa já existente e o limite igual ao que o serviço conta (fuso BR).
+      await runWithTenant(ALPHA, () =>
+        ctx.db.client.conversation.create({ data: { tenantId: ALPHA, channel: 'WEBCHAT', channelUserId: `wc_${randomUUID()}`, status: 'CLOSED' } }),
+      );
+      const { conversationsThisMonth } = await access.usage(ALPHA);
+      await ctx.prisma.tenant.update({ where: { id: ALPHA }, data: { monthlyConversationLimit: conversationsThisMonth } });
       const conv = await runWithTenant(ALPHA, () =>
         ctx.db.client.conversation.create({ data: { tenantId: ALPHA, channel: 'WEBCHAT', channelUserId: `wc_${randomUUID()}`, status: 'AI_ACTIVE' } }),
       );
